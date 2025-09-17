@@ -1,0 +1,367 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// Enums
+enum UserRole {
+  ADMIN
+  MANAGER
+  AGENT
+}
+
+enum LeadStatus {
+  NEW
+  CONTACTED
+  ENGAGED
+  QUALIFIED
+  PROPOSAL_SENT
+  NEGOTIATION
+  CLOSED_WON
+  CLOSED_LOST
+  FOLLOW_UP
+}
+
+enum LeadSource {
+  MANUAL
+  API
+  CHATBOT
+  EMAIL
+  WHATSAPP
+  SOCIAL_MEDIA
+  WEBSITE
+  REFERRAL
+}
+
+enum InsuranceType {
+  LIFE
+  HEALTH
+  AUTO
+  HOME
+  BUSINESS
+  TRAVEL
+  OTHER
+}
+
+enum CommunicationChannel {
+  EMAIL
+  WHATSAPP
+  PHONE
+  SMS
+  IN_APP
+  SOCIAL_MEDIA
+}
+
+enum TaskStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum TaskType {
+  FOLLOW_UP
+  CALL
+  MEETING
+  EMAIL
+  PROPOSAL
+  OTHER
+}
+
+// Core Models
+model User {
+  id          String   @id @default(uuid())
+  email       String   @unique
+  password    String
+  firstName   String
+  lastName    String
+  phone       String?
+  role        UserRole @default(AGENT)
+  isActive    Boolean  @default(true)
+  lastLogin   DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  assignedLeads     Lead[]
+  communications    Communication[]
+  tasks             Task[]
+  auditLogs         AuditLog[]
+  aiConversations   AIConversation[]
+
+  @@map("users")
+}
+
+model Company {
+  id        String   @id @default(uuid())
+  name      String
+  address   String?
+  phone     String?
+  email     String?
+  website   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  clients   Client[]
+
+  @@map("companies")
+}
+
+model Lead {
+  id                    String         @id @default(uuid())
+  source                LeadSource
+  status                LeadStatus     @default(NEW)
+  insuranceType         InsuranceType
+  urgency               Int            @default(1) // 1-5 scale
+  score                 Float          @default(0) // Lead scoring
+  manualScore           Float?         // Manual override
+  
+  // Contact Information
+  firstName             String
+  lastName              String
+  email                 String?
+  phone                 String?
+  alternatePhone        String?
+  preferredContact      CommunicationChannel?
+  
+  // Location
+  address               String?
+  city                  String?
+  state                 String?
+  zipCode               String?
+  country               String?       @default("US")
+  
+  // Inquiry Details
+  inquiryDetails        String?       @db.Text
+  budget                Decimal?      @db.Decimal(10, 2)
+  expectedCloseDate     DateTime?
+  
+  // Assignment and Tracking
+  assignedUserId        String?
+  assignedUser          User?         @relation(fields: [assignedUserId], references: [id])
+  
+  // Timestamps
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+  lastContactedAt       DateTime?
+  
+  // Relations
+  communications        Communication[]
+  tasks                 Task[]
+  client                Client?
+  aiConversations       AIConversation[]
+  leadProducts          LeadProduct[]
+  chatMessages          ChatMessage[]
+  emailMessages         EmailMessage[]
+
+  @@map("leads")
+}
+
+model Communication {
+  id          String               @id @default(uuid())
+  channel     CommunicationChannel
+  direction   String               // INBOUND, OUTBOUND
+  subject     String?
+  content     String               @db.Text
+  metadata    Json?                // Store channel-specific data
+  isRead      Boolean              @default(false)
+  sentAt      DateTime             @default(now())
+  
+  // Relations
+  leadId      String
+  lead        Lead                 @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  userId      String?
+  user        User?                @relation(fields: [userId], references: [id])
+  
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+
+  @@map("communications")
+}
+
+model Product {
+  id              String    @id @default(uuid())
+  name            String
+  description     String?   @db.Text
+  type            InsuranceType
+  basePrice       Decimal?  @db.Decimal(10, 2)
+  features        Json?     // Store product features as JSON
+  isActive        Boolean   @default(true)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  clients         Client[]
+  leadProducts    LeadProduct[]
+
+  @@map("products")
+}
+
+model LeadProduct {
+  id        String   @id @default(uuid())
+  leadId    String
+  lead      Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product  @relation(fields: [productId], references: [id])
+  interest  Int      @default(1) // 1-5 scale
+  notes     String?  @db.Text
+  createdAt DateTime @default(now())
+
+  @@unique([leadId, productId])
+  @@map("lead_products")
+}
+
+model Client {
+  id              String    @id @default(uuid())
+  
+  // Lead conversion
+  leadId          String?   @unique
+  lead            Lead?     @relation(fields: [leadId], references: [id])
+  
+  // Client Information
+  firstName       String
+  lastName        String
+  email           String?
+  phone           String?
+  dateOfBirth     DateTime?
+  
+  // Company relationship
+  companyId       String?
+  company         Company?  @relation(fields: [companyId], references: [id])
+  
+  // Policy Information
+  productId       String?
+  product         Product?  @relation(fields: [productId], references: [id])
+  policyNumber    String?   @unique
+  premium         Decimal?  @db.Decimal(10, 2)
+  commission      Decimal?  @db.Decimal(10, 2)
+  startDate       DateTime?
+  endDate         DateTime?
+  renewalDate     DateTime?
+  
+  // Status
+  isActive        Boolean   @default(true)
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@map("clients")
+}
+
+model Task {
+  id          String     @id @default(uuid())
+  title       String
+  description String?    @db.Text
+  type        TaskType
+  status      TaskStatus @default(PENDING)
+  priority    Int        @default(1) // 1-5 scale
+  dueDate     DateTime?
+  completedAt DateTime?
+  
+  // Relations
+  leadId      String?
+  lead        Lead?      @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  assignedUserId String
+  assignedUser   User    @relation(fields: [assignedUserId], references: [id])
+  
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@map("tasks")
+}
+
+model AIConversation {
+  id            String   @id @default(uuid())
+  type          String   // CHATBOT, SENTIMENT_ANALYSIS, AUTO_RESPONSE
+  input         String   @db.Text
+  output        String   @db.Text
+  confidence    Float?   // AI confidence score
+  metadata      Json?    // Store AI-specific data
+  isEscalated   Boolean  @default(false)
+  escalatedAt   DateTime?
+  
+  // Relations
+  leadId        String?
+  lead          Lead?    @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  userId        String?
+  user          User?    @relation(fields: [userId], references: [id])
+  chatMessages  ChatMessage[]
+  
+  createdAt     DateTime @default(now())
+
+  @@map("ai_conversations")
+}
+
+model ChatMessage {
+  id                String   @id @default(uuid())
+  content           String   @db.Text
+  sender            String   // CUSTOMER, AI_ASSISTANT, HUMAN_AGENT
+  platform          String   // WHATSAPP, EMAIL, SMS
+  platformMessageId String?  // External platform message ID
+  metadata          Json?    // Platform-specific data (phone numbers, email addresses, etc.)
+  isRead            Boolean  @default(false)
+  readAt            DateTime?
+  
+  // Relations
+  conversationId    String?
+  conversation      AIConversation? @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  leadId            String?
+  lead              Lead?           @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@map("chat_messages")
+}
+
+model EmailMessage {
+  id          String   @id @default(uuid())
+  subject     String
+  content     String   @db.Text
+  fromEmail   String
+  toEmail     String
+  ccEmails    String?  @db.Text // JSON array of CC emails
+  bccEmails   String?  @db.Text // JSON array of BCC emails
+  messageId   String?  @unique  // External email message ID
+  inReplyTo   String?  // Message ID this is replying to
+  threadId    String?  // Email thread identifier
+  isRead      Boolean  @default(false)
+  readAt      DateTime?
+  direction   String   // INBOUND, OUTBOUND
+  
+  // Relations
+  leadId      String?
+  lead        Lead?    @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("email_messages")
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  action    String   // CREATE, UPDATE, DELETE, LOGIN, etc.
+  entity    String   // User, Lead, Communication, etc.
+  entityId  String
+  oldValue  Json?
+  newValue  Json?
+  ipAddress String?
+  userAgent String?
+  
+  // Relations
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id])
+  
+  createdAt DateTime @default(now())
+
+  @@map("audit_logs")
+}
