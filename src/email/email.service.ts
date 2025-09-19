@@ -1,10 +1,14 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../common/services/prisma.service';
+import { SmtpEmailService } from './smtp-email.service';
 import { LeadSource, LeadStatus, InsuranceType } from '@prisma/client';
 
 @Injectable()
 export class EmailService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private smtpEmailService: SmtpEmailService,
+  ) {}
 
   async createOrGetLeadByEmail(email: string, name?: string) {
     // Check if lead exists by email
@@ -278,13 +282,40 @@ export class EmailService {
       messageId: `msg_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`,
     });
 
-    // Mock email sending - in production, send actual email here
-    return {
-      success: true,
-      messageId: emailMessage.messageId,
-      emailId: emailMessage.id,
-      threadId: emailMessage.threadId,
-    };
+    // Actually send the email using SMTP
+    try {
+      const sendResult = await this.smtpEmailService.sendEmail({
+        to: data.toEmail,
+        subject: subject,
+        html: data.content,
+        cc: data.ccEmails,
+        bcc: data.bccEmails,
+      });
+
+      if (sendResult.success) {
+        console.log(`Email sent successfully to ${data.toEmail}. SMTP Message ID: ${sendResult.messageId}`);
+      } else {
+        console.error(`Failed to send email to ${data.toEmail}: ${sendResult.error}`);
+      }
+
+      return {
+        success: sendResult.success,
+        messageId: emailMessage.messageId,
+        smtpMessageId: sendResult.messageId,
+        emailId: emailMessage.id,
+        threadId: emailMessage.threadId,
+        error: sendResult.error,
+      };
+    } catch (error) {
+      console.error('Error sending email via SMTP:', error);
+      return {
+        success: false,
+        messageId: emailMessage.messageId,
+        emailId: emailMessage.id,
+        threadId: emailMessage.threadId,
+        error: error.message,
+      };
+    }
   }
 
   async handleIncomingEmail(data: {
@@ -401,5 +432,96 @@ export class EmailService {
       inboundEmails,
       outboundEmails: totalEmails - inboundEmails,
     };
+  }
+
+  async getEmailContacts(search?: string) {
+    const whereClause: any = {};
+    
+    if (search) {
+      whereClause.OR = [
+        { fromEmail: { contains: search, mode: 'insensitive' } },
+        { toEmail: { contains: search, mode: 'insensitive' } },
+        { lead: { firstName: { contains: search, mode: 'insensitive' } } },
+        { lead: { lastName: { contains: search, mode: 'insensitive' } } },
+      ];
+    }
+
+    // Get unique email contacts from both sent and received emails
+    const [fromEmails, toEmails] = await Promise.all([
+      this.prisma.emailMessage.findMany({
+        where: {
+          direction: 'INBOUND',
+          ...whereClause,
+        },
+        select: {
+          fromEmail: true,
+          createdAt: true,
+          lead: {
+            select: {
+              firstName: true,
+              lastName: true,
+              email: true,
+            },
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 50,
+      }),
+      this.prisma.emailMessage.findMany({
+        where: {
+          direction: 'OUTBOUND',
+          ...whereClause,
+        },
+        select: {
+          toEmail: true,
+          createdAt: true,
+          lead: {
+            select: {
+              firstName: true,
+              lastName: true,
+              email: true,
+            },
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 50,
+      }),
+    ]);
+
+    // Process and deduplicate contacts
+    const contactsMap = new Map();
+
+    fromEmails.forEach((email) => {
+      const emailAddress = email.fromEmail;
+      if (!contactsMap.has(emailAddress) || contactsMap.get(emailAddress).lastContacted < email.createdAt) {
+        contactsMap.set(emailAddress, {
+          email: emailAddress,
+          name: email.lead?.firstName && email.lead?.lastName 
+            ? `${email.lead.firstName} ${email.lead.lastName}` 
+            : null,
+          lastContacted: email.createdAt,
+        });
+      }
+    });
+
+    toEmails.forEach((email) => {
+      const emailAddress = email.toEmail;
+      if (!contactsMap.has(emailAddress) || contactsMap.get(emailAddress).lastContacted < email.createdAt) {
+        contactsMap.set(emailAddress, {
+          email: emailAddress,
+          name: email.lead?.firstName && email.lead?.lastName 
+            ? `${email.lead.firstName} ${email.lead.lastName}` 
+            : null,
+          lastContacted: email.createdAt,
+        });
+      }
+    });
+
+    // Convert to array and sort by last contacted
+    const contacts = Array.from(contactsMap.values())
+      .sort((a, b) => new Date(b.lastContacted).getTime() - new Date(a.lastContacted).getTime())
+      .slice(0, 20); // Limit to 20 most recent
+
+    return contacts;
   }
 }

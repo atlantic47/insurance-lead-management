@@ -17,6 +17,7 @@ import {
 } from '@nestjs/swagger';
 import { EmailService } from './email.service';
 import { EmailFetcherService } from './email-fetcher.service';
+import { EmailQueueService } from './email-queue.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Public } from '../common/decorators/public.decorator';
@@ -29,6 +30,7 @@ export class EmailController {
   constructor(
     private readonly emailService: EmailService,
     private readonly emailFetcherService: EmailFetcherService,
+    private readonly emailQueueService: EmailQueueService,
   ) {}
 
   @Get()
@@ -120,9 +122,14 @@ export class EmailController {
   }
 
   @Post('fetch')
-  @ApiOperation({ summary: 'Manually trigger email fetching from IMAP server' })
+  @ApiOperation({ summary: 'Queue email fetching job (runs in background)' })
   async fetchEmails() {
-    return this.emailFetcherService.fetchEmailsNow();
+    const jobId = await this.emailQueueService.triggerEmailFetchNow();
+    return {
+      success: true,
+      message: 'Email fetch job queued successfully',
+      jobId,
+    };
   }
 
   @Post('test-connection')
@@ -137,7 +144,7 @@ export class EmailController {
 
   @Public()
   @Post('webhook/incoming')
-  @ApiOperation({ summary: 'Handle incoming email webhook' })
+  @ApiOperation({ summary: 'Queue incoming email for processing (webhook)' })
   async handleIncomingEmail(
     @Body() data: {
       from: string;
@@ -151,17 +158,46 @@ export class EmailController {
       bcc?: string[];
     },
   ) {
-    return this.emailService.handleIncomingEmail(data);
+    const jobId = await this.emailQueueService.processWebhookEmail(data);
+    return {
+      success: true,
+      message: 'Email processing job queued successfully',
+      jobId,
+    };
   }
 
   @Public()
   @Post('webhook/fetch')
-  @ApiOperation({ summary: 'Webhook endpoint to trigger email fetching' })
+  @ApiOperation({ summary: 'Webhook endpoint to queue email fetching' })
   async webhookFetchEmails() {
-    const result = await this.emailFetcherService.fetchEmailsNow();
+    const jobId = await this.emailQueueService.queueEmailFetch('webhook');
     return {
-      success: result.success,
-      message: result.success ? 'Email fetch triggered successfully' : result.error,
+      success: true,
+      message: 'Email fetch job queued successfully',
+      jobId,
     };
+  }
+
+  @Get('queue/stats')
+  @ApiOperation({ summary: 'Get email queue statistics' })
+  async getQueueStats() {
+    return this.emailQueueService.getQueueStats();
+  }
+
+  @Get('queue/job/:jobId')
+  @ApiOperation({ summary: 'Get specific job details' })
+  async getJobDetails(@Param('jobId') jobId: string) {
+    const job = this.emailQueueService.getJob(jobId);
+    if (!job) {
+      return { error: 'Job not found' };
+    }
+    return job;
+  }
+
+  @Get('contacts')
+  @ApiOperation({ summary: 'Get email contacts from history' })
+  @ApiQuery({ name: 'search', required: false, type: String })
+  async getEmailContacts(@Query('search') search?: string) {
+    return this.emailService.getEmailContacts(search);
   }
 }

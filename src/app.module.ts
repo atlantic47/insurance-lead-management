@@ -14,6 +14,7 @@ import { AIModule } from './ai/ai.module';
 import { ReportsModule } from './reports/reports.module';
 import { ChatModule } from './chat/chat.module';
 import { EmailModule } from './email/email.module';
+import { WhatsAppModule } from './whatsapp/whatsapp.module';
 import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
 import { RolesGuard } from './auth/guards/roles.guard';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
@@ -36,6 +37,7 @@ import { PrismaService } from './common/services/prisma.service';
     ReportsModule,
     ChatModule,
     EmailModule,
+    WhatsAppModule,
   ],
   controllers: [AppController],
   providers: [

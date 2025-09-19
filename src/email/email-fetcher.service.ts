@@ -44,6 +44,13 @@ export class EmailFetcherService {
     return new Promise((resolve) => {
       try {
         const config = this.getImapConfig();
+        this.logger.log('Attempting IMAP connection with config:', {
+          user: config.user,
+          host: config.host,
+          port: config.port,
+          tls: config.tls,
+        });
+        
         this.imap = new Imap(config);
 
         this.imap.once('ready', () => {
@@ -53,7 +60,8 @@ export class EmailFetcherService {
         });
 
         this.imap.once('error', (err: Error) => {
-          this.logger.error('IMAP connection error:', err);
+          this.logger.error('IMAP connection error:', err.message);
+          this.logger.error('Full error details:', err);
           this.isConnected = false;
           resolve(false);
         });
@@ -92,70 +100,94 @@ export class EmailFetcherService {
         const since = new Date();
         since.setDate(since.getDate() - 7);
         
+        // First try to get unseen emails, if none found, get recent emails
         const searchCriteria = ['UNSEEN']; // Only fetch unseen (new) emails
         // Alternative: ['SINCE', since] to fetch emails since a specific date
 
         this.imap!.search(searchCriteria, (err, results) => {
           if (err) {
-            this.logger.error('Error searching emails:', err);
+            this.logger.error('Error searching emails:', err.message);
+            this.logger.error('Search error details:', err);
             reject(err);
             return;
           }
 
           if (!results || results.length === 0) {
-            this.logger.log('No new emails found');
-            resolve();
+            this.logger.log('No unseen emails found, checking recent emails...');
+            
+            // Fallback: search for ALL emails and filter by date locally
+            this.imap!.search(['ALL'], (recentErr, recentResults) => {
+              if (recentErr) {
+                this.logger.error('Error searching all emails:', recentErr.message);
+                resolve();
+                return;
+              }
+              
+              if (!recentResults || recentResults.length === 0) {
+                this.logger.log('No emails found in mailbox');
+                resolve();
+                return;
+              }
+              
+              // Get last 10 emails to check if any are recent and not yet processed
+              const recentEmailIds = recentResults.slice(-10);
+              this.logger.log(`Found ${recentResults.length} total emails, checking last ${recentEmailIds.length} emails`);
+              this.processEmailResults(recentEmailIds, resolve);
+            });
             return;
           }
 
           this.logger.log(`Found ${results.length} new emails`);
-          
-          const fetch = this.imap!.fetch(results, {
-            bodies: '',
-            markSeen: true, // Mark as seen after fetching
-          });
-
-          let processedCount = 0;
-
-          fetch.on('message', (msg, seqno) => {
-            this.logger.log(`Processing email ${seqno}`);
-            
-            msg.on('body', (stream, info) => {
-              this.parseEmailStream(stream)
-                .then(() => {
-                  processedCount++;
-                  if (processedCount === results.length) {
-                    resolve();
-                  }
-                })
-                .catch((parseErr) => {
-                  this.logger.error('Error parsing email:', parseErr);
-                  processedCount++;
-                  if (processedCount === results.length) {
-                    resolve();
-                  }
-                });
-            });
-
-            msg.once('attributes', (attrs) => {
-              this.logger.debug(`Email attributes:`, attrs);
-            });
-
-            msg.once('end', () => {
-              this.logger.debug(`Finished processing email ${seqno}`);
-            });
-          });
-
-          fetch.once('error', (fetchErr) => {
-            this.logger.error('Fetch error:', fetchErr);
-            reject(fetchErr);
-          });
-
-          fetch.once('end', () => {
-            this.logger.log('Finished fetching emails');
-          });
+          this.processEmailResults(results, resolve);
         });
       });
+    });
+  }
+
+  private processEmailResults(results: number[], resolve: () => void): void {
+    const fetch = this.imap!.fetch(results, {
+      bodies: '',
+      markSeen: false, // Don't mark as seen to avoid duplicates when checking for recent emails
+    });
+
+    let processedCount = 0;
+
+    fetch.on('message', (msg, seqno) => {
+      this.logger.log(`Processing email ${seqno}`);
+      
+      msg.on('body', (stream, info) => {
+        this.parseEmailStream(stream)
+          .then(() => {
+            processedCount++;
+            if (processedCount === results.length) {
+              resolve();
+            }
+          })
+          .catch((parseErr) => {
+            this.logger.error('Error parsing email:', parseErr);
+            processedCount++;
+            if (processedCount === results.length) {
+              resolve();
+            }
+          });
+      });
+
+      msg.once('attributes', (attrs) => {
+        this.logger.debug(`Email attributes:`, attrs);
+      });
+
+      msg.once('end', () => {
+        this.logger.debug(`Finished processing email ${seqno}`);
+      });
+    });
+
+    fetch.once('error', (fetchErr) => {
+      this.logger.error('Fetch error:', fetchErr);
+      resolve(); // Still resolve to avoid hanging
+    });
+
+    fetch.once('end', () => {
+      this.logger.log('Finished fetching emails');
     });
   }
 
