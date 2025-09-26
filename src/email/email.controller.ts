@@ -184,6 +184,12 @@ export class EmailController {
     return this.emailQueueService.getQueueStats();
   }
 
+  @Post('queue/clear')
+  @ApiOperation({ summary: 'Clear all queue jobs' })
+  async clearQueue() {
+    return this.emailQueueService.clearAllJobs();
+  }
+
   @Get('queue/job/:jobId')
   @ApiOperation({ summary: 'Get specific job details' })
   async getJobDetails(@Param('jobId') jobId: string) {

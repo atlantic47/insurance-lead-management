@@ -90,12 +90,40 @@ export class ChatService {
   async getAllConversations(page = 1, limit = 20) {
     const skip = (page - 1) * limit;
     
-    const [conversations, total] = await Promise.all([
+    // Get WhatsApp conversations specifically
+    const [whatsappConversations, total] = await Promise.all([
       this.prisma.aIConversation.findMany({
+        where: {
+          type: 'WHATSAPP_CHAT'
+        },
         skip,
         take: limit,
         include: {
-          lead: {
+          chatMessages: {
+            orderBy: { createdAt: 'asc' },
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+      }),
+      this.prisma.aIConversation.count({
+        where: {
+          type: 'WHATSAPP_CHAT'
+        }
+      }),
+    ]);
+
+    // Format conversations and fetch associated leads
+    const formattedConversations = await Promise.all(
+      whatsappConversations.map(async (conv) => {
+        const phoneNumber = conv.metadata?.['phoneNumber'] as string;
+        const customerName = conv.metadata?.['customerName'] as string;
+        const leadId = conv.metadata?.['leadId'] as string;
+        
+        // Try to fetch the associated lead
+        let lead: any = null;
+        if (leadId) {
+          lead = await this.prisma.lead.findUnique({
+            where: { id: leadId },
             select: {
               id: true,
               firstName: true,
@@ -104,22 +132,58 @@ export class ChatService {
               email: true,
               status: true,
             },
+          });
+        }
+
+        // If no lead found but we have phone number, try to find/create one
+        if (!lead && phoneNumber) {
+          lead = await this.createOrGetLead(phoneNumber, customerName);
+          
+          // Link this conversation to the found/created lead
+          if (lead) {
+            await this.prisma.aIConversation.update({
+              where: { id: conv.id },
+              data: {
+                metadata: {
+                  ...conv.metadata as any,
+                  leadId: lead.id
+                }
+              }
+            });
+          }
+        }
+        
+        return {
+          id: conv.id,
+          isEscalated: conv.isEscalated,
+          escalatedAt: conv.escalatedAt,
+          lead: {
+            id: lead?.id || `temp_lead_${conv.id}`,
+            firstName: lead?.firstName || customerName || 'WhatsApp',
+            lastName: lead?.lastName || 'Customer',
+            phone: lead?.phone || phoneNumber || '+15550935798',
+            email: lead?.email,
+            status: lead?.status || 'NEW',
           },
-          chatMessages: {
-            orderBy: { createdAt: 'desc' },
-            take: 1,
-          },
-        },
-        orderBy: { createdAt: 'desc' },
-      }),
-      this.prisma.aIConversation.count(),
-    ]);
+          chatMessages: conv.chatMessages.map(msg => ({
+            id: msg.id,
+            content: msg.content,
+            sender: msg.sender,
+            platform: msg.platform,
+            createdAt: msg.createdAt.toISOString(),
+            isRead: msg.isRead,
+          }))
+        };
+      })
+    );
 
     return {
-      conversations,
-      total,
-      page,
-      totalPages: Math.ceil(total / limit),
+      data: {
+        conversations: formattedConversations,
+        total,
+        page,
+        totalPages: Math.ceil(total / limit),
+      }
     };
   }
 

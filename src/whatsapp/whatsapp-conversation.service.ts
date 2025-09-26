@@ -12,6 +12,8 @@ export interface WhatsAppConversation {
   assignedAgentId?: string;
   createdAt: Date;
   updatedAt: Date;
+  leadId?: string;
+  lead?: any;
   messages: WhatsAppConversationMessage[];
 }
 
@@ -84,33 +86,53 @@ export class WhatsAppConversationService {
     message: WhatsAppMessage
   ): Promise<void> {
     try {
+      this.logger.log(`🤖 Starting AI response generation for message: "${message.text?.body}"`);
+      
       // Send typing indicator
-      await this.whatsappService.sendTypingIndicator(message.from);
+      try {
+        await this.whatsappService.sendTypingIndicator(message.from);
+        this.logger.log('✅ Typing indicator sent');
+      } catch (typingError) {
+        this.logger.warn('⚠️ Typing indicator failed:', typingError.message);
+      }
 
       // Get conversation history
       const history = await this.getConversationHistory(conversation.id, 10);
       const historyTexts = history.map(msg => msg.content);
+      this.logger.log(`📚 Retrieved ${history.length} messages from conversation history`);
 
       // Generate AI response
+      this.logger.log(`🧠 Calling OpenAI service with message: "${message.text?.body}"`);
       const aiResponse = await this.openaiService.generateResponse(
         message.text?.body || '',
         conversation.customerName,
         historyTexts
       );
+      
+      this.logger.log(`🤖 AI Response generated:`, {
+        message: aiResponse.message?.substring(0, 100) + '...',
+        shouldEscalate: aiResponse.shouldEscalate,
+        confidence: aiResponse.confidence,
+        intent: aiResponse.intent
+      });
 
       // Check if escalation is needed
       if (aiResponse.shouldEscalate || aiResponse.confidence < 0.5) {
+        this.logger.log(`🚨 Escalating conversation due to: shouldEscalate=${aiResponse.shouldEscalate}, confidence=${aiResponse.confidence}`);
         await this.escalateConversation(conversation, aiResponse.message);
         return;
       }
 
       // Send AI response
+      this.logger.log(`📤 Attempting to send AI response to ${message.from}`);
       const success = await this.whatsappService.sendMessage(
         message.from,
         aiResponse.message
       );
 
       if (success) {
+        this.logger.log(`✅ AI response sent successfully to ${message.from}`);
+        
         // Save AI response message
         await this.saveMessage({
           conversationId: conversation.id,
@@ -122,11 +144,14 @@ export class WhatsAppConversationService {
           timestamp: new Date(),
         });
 
-        this.logger.log(`AI response sent to ${message.from}`);
+        this.logger.log(`💾 AI response message saved to database`);
+      } else {
+        this.logger.error(`❌ Failed to send AI response to ${message.from}`);
       }
 
     } catch (error) {
-      this.logger.error('Error generating AI response:', error);
+      this.logger.error('❌ Error in generateAndSendAIResponse:', error);
+      this.logger.error('Error stack:', error.stack);
       
       // Fallback to escalation
       await this.escalateConversation(
@@ -192,81 +217,238 @@ export class WhatsAppConversationService {
   }
 
   private async findConversationByPhoneNumber(phoneNumber: string): Promise<WhatsAppConversation | null> {
-    // This would be implemented with your database
-    // For now, return null to always create new conversations
-    return null;
+    try {
+      // Find all WhatsApp conversations and filter by phone number
+      const conversations = await this.prisma.aIConversation.findMany({
+        where: {
+          type: 'WHATSAPP_CHAT'
+        },
+        orderBy: { createdAt: 'desc' },
+        include: {
+          chatMessages: {
+            orderBy: { createdAt: 'asc' }
+          }
+        }
+      });
+
+      // Filter by phone number in the metadata
+      const conversation = conversations.find(conv => 
+        conv.metadata && 
+        typeof conv.metadata === 'object' && 
+        'phoneNumber' in conv.metadata && 
+        conv.metadata.phoneNumber === phoneNumber
+      );
+
+      if (!conversation) return null;
+
+      // Get the linked lead if it exists
+      const leadId = conversation.metadata?.['leadId'] as string;
+      let linkedLead: any = null;
+      if (leadId) {
+        linkedLead = await this.prisma.lead.findUnique({ where: { id: leadId } });
+      }
+
+      // Convert to WhatsAppConversation format
+      return {
+        id: conversation.id,
+        phoneNumber: phoneNumber,
+        customerName: conversation.metadata?.['customerName'] as string,
+        status: (conversation.metadata?.['status'] as 'active' | 'escalated' | 'closed') || 'active',
+        assignedAgentId: conversation.metadata?.['assignedAgentId'] as string,
+        createdAt: conversation.createdAt,
+        updatedAt: conversation.chatMessages[conversation.chatMessages.length - 1]?.updatedAt || conversation.createdAt,
+        leadId: leadId,
+        lead: linkedLead,
+        messages: conversation.chatMessages.map(msg => ({
+          id: msg.id,
+          conversationId: conversation.id,
+          messageId: msg.platformMessageId || msg.id,
+          content: msg.content,
+          direction: msg.sender === 'CUSTOMER' ? 'inbound' : 'outbound',
+          messageType: 'text',
+          isFromAI: msg.sender === 'AI_ASSISTANT',
+          timestamp: msg.createdAt,
+        }))
+      };
+    } catch (error) {
+      this.logger.error('Error finding conversation by phone number:', error);
+      return null;
+    }
   }
 
   private async createConversation(phoneNumber: string, customerName?: string): Promise<WhatsAppConversation> {
-    // Create conversation in database
-    const conversation: WhatsAppConversation = {
-      id: `conv_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-      phoneNumber,
-      customerName,
-      status: 'active',
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      messages: [],
-    };
+    try {
+      // First, create or get the lead for this conversation
+      const lead = await this.createOrGetLead(phoneNumber, customerName);
+      this.logger.log(`Lead created/found for phone ${phoneNumber}: ${lead.id}`);
 
-    this.logger.log(`Created new WhatsApp conversation: ${conversation.id}`);
-    return conversation;
+      // Create conversation in database
+      const conversation = await this.prisma.aIConversation.create({
+        data: {
+          type: 'WHATSAPP_CHAT',
+          input: 'New WhatsApp conversation started',
+          output: 'Conversation initialized',
+          confidence: 1.0,
+          metadata: {
+            phoneNumber,
+            customerName,
+            status: 'active',
+            platform: 'WHATSAPP',
+            createdBy: 'webhook',
+            leadId: lead.id // Link to the lead
+          }
+        }
+      });
+
+      this.logger.log(`Created new WhatsApp conversation: ${conversation.id} linked to lead: ${lead.id}`);
+      
+      return {
+        id: conversation.id,
+        phoneNumber,
+        customerName,
+        status: 'active',
+        createdAt: conversation.createdAt,
+        updatedAt: conversation.createdAt,
+        messages: [],
+      };
+    } catch (error) {
+      this.logger.error('Error creating conversation:', error);
+      throw error;
+    }
   }
 
   private async saveMessage(messageData: Omit<WhatsAppConversationMessage, 'id'>): Promise<void> {
-    // Save message to database
-    this.logger.log(`Saved message: ${messageData.direction} - ${messageData.content.substring(0, 50)}...`);
+    try {
+      // Save message to database using ChatMessage model
+      await this.prisma.chatMessage.create({
+        data: {
+          content: messageData.content,
+          sender: messageData.isFromAI 
+            ? 'AI_ASSISTANT' 
+            : messageData.direction === 'inbound' 
+              ? 'CUSTOMER' 
+              : 'HUMAN_AGENT',
+          platform: 'WHATSAPP',
+          platformMessageId: messageData.messageId,
+          conversationId: messageData.conversationId,
+          metadata: {
+            direction: messageData.direction,
+            messageType: messageData.messageType,
+            timestamp: messageData.timestamp
+          },
+          isRead: false
+        }
+      });
+
+      this.logger.log(`Saved message: ${messageData.direction} - ${messageData.content.substring(0, 50)}...`);
+    } catch (error) {
+      this.logger.error('Error saving message:', error);
+      throw error;
+    }
   }
 
   private async updateConversationStatus(conversationId: string, status: 'active' | 'escalated' | 'closed'): Promise<void> {
-    // Update conversation status in database
-    this.logger.log(`Updated conversation ${conversationId} status to ${status}`);
+    try {
+      // Update conversation status in database - Get current metadata and update it
+      const conversation = await this.prisma.aIConversation.findUnique({
+        where: { id: conversationId }
+      });
+      
+      if (conversation) {
+        const updatedMetadata = { 
+          ...conversation.metadata as any, 
+          status 
+        };
+        
+        await this.prisma.aIConversation.update({
+          where: { id: conversationId },
+          data: {
+            metadata: updatedMetadata
+          }
+        });
+      }
+      
+      this.logger.log(`Updated conversation ${conversationId} status to ${status}`);
+    } catch (error) {
+      this.logger.error('Error updating conversation status:', error);
+      throw error;
+    }
   }
 
   private async getConversationHistory(conversationId: string, limit: number): Promise<WhatsAppConversationMessage[]> {
-    // Get conversation history from database
-    // For now, return empty array
-    return [];
+    try {
+      // Get conversation history from database
+      const messages = await this.prisma.chatMessage.findMany({
+        where: { conversationId },
+        orderBy: { createdAt: 'desc' },
+        take: limit
+      });
+
+      return messages.map(msg => ({
+        id: msg.id,
+        conversationId,
+        messageId: msg.platformMessageId || msg.id,
+        content: msg.content,
+        direction: msg.sender === 'CUSTOMER' ? 'inbound' : 'outbound',
+        messageType: 'text',
+        isFromAI: msg.sender === 'AI_ASSISTANT',
+        timestamp: msg.createdAt,
+      }));
+    } catch (error) {
+      this.logger.error('Error getting conversation history:', error);
+      return [];
+    }
   }
 
-  private async createLeadFromConversation(conversation: WhatsAppConversation): Promise<void> {
+  private async createOrGetLead(phoneNumber: string, customerName?: string): Promise<any> {
     try {
-      // Extract phone number without country code
-      const phoneNumber = conversation.phoneNumber.replace(/^\+1/, '').replace(/\D/g, '');
+      // Extract phone number without country code for storage
+      const cleanPhoneNumber = phoneNumber.replace(/^\+1/, '').replace(/\D/g, '');
       
       // Check if lead already exists
       const existingLead = await this.prisma.lead.findFirst({
         where: {
           OR: [
+            { phone: cleanPhoneNumber },
             { phone: phoneNumber },
-            { phone: conversation.phoneNumber },
           ]
         }
       });
 
       if (existingLead) {
-        this.logger.log(`Lead already exists for phone number: ${conversation.phoneNumber}`);
-        return;
+        this.logger.log(`Found existing lead for phone number: ${phoneNumber}`);
+        return existingLead;
       }
 
       // Create new lead
       const leadData = {
-        firstName: conversation.customerName || 'WhatsApp',
+        firstName: customerName || 'WhatsApp',
         lastName: 'Customer',
-        email: `whatsapp_${phoneNumber}@temp.com`, // Temporary email
-        phone: phoneNumber,
+        email: `whatsapp_${cleanPhoneNumber}@temp.com`, // Temporary email
+        phone: cleanPhoneNumber,
         status: LeadStatus.NEW,
         source: LeadSource.WHATSAPP,
         insuranceType: InsuranceType.AUTO, // Default insurance type
-        notes: `Auto-created from WhatsApp conversation ${conversation.id}`,
+        inquiryDetails: `Auto-created from WhatsApp conversation`,
       };
 
       const newLead = await this.prisma.lead.create({
         data: leadData
       });
 
-      this.logger.log(`Created lead ${newLead.id} from WhatsApp conversation ${conversation.id}`);
+      this.logger.log(`Created new lead ${newLead.id} for WhatsApp phone: ${phoneNumber}`);
+      return newLead;
 
+    } catch (error) {
+      this.logger.error('Error creating/getting lead:', error);
+      throw error;
+    }
+  }
+
+  private async createLeadFromConversation(conversation: WhatsAppConversation): Promise<void> {
+    try {
+      // This method now just calls createOrGetLead
+      await this.createOrGetLead(conversation.phoneNumber, conversation.customerName);
     } catch (error) {
       this.logger.error('Error creating lead from conversation:', error);
     }
@@ -309,9 +491,133 @@ export class WhatsAppConversationService {
     }
   }
 
-  private async findConversationById(conversationId: string): Promise<WhatsAppConversation | null> {
-    // Find conversation by ID in database
-    // For now, return null
-    return null;
+  async findConversationById(conversationId: string): Promise<WhatsAppConversation | null> {
+    try {
+      // Find conversation by ID in database
+      const conversation = await this.prisma.aIConversation.findUnique({
+        where: { id: conversationId },
+        include: {
+          chatMessages: {
+            orderBy: { createdAt: 'asc' }
+          }
+        }
+      });
+
+      if (!conversation) return null;
+
+      const phoneNumber = conversation.metadata?.['phoneNumber'] as string;
+      const leadId = conversation.metadata?.['leadId'] as string;
+      
+      // Get the linked lead if it exists
+      let linkedLead: any = null;
+      if (leadId) {
+        linkedLead = await this.prisma.lead.findUnique({ where: { id: leadId } });
+      }
+      
+      return {
+        id: conversation.id,
+        phoneNumber,
+        customerName: conversation.metadata?.['customerName'] as string,
+        status: (conversation.metadata?.['status'] as 'active' | 'escalated' | 'closed') || 'active',
+        assignedAgentId: conversation.metadata?.['assignedAgentId'] as string,
+        createdAt: conversation.createdAt,
+        updatedAt: conversation.chatMessages[conversation.chatMessages.length - 1]?.updatedAt || conversation.createdAt,
+        leadId: leadId,
+        lead: linkedLead,
+        messages: conversation.chatMessages.map(msg => ({
+          id: msg.id,
+          conversationId: conversation.id,
+          messageId: msg.platformMessageId || msg.id,
+          content: msg.content,
+          direction: msg.sender === 'CUSTOMER' ? 'inbound' : 'outbound',
+          messageType: 'text',
+          isFromAI: msg.sender === 'AI_ASSISTANT',
+          timestamp: msg.createdAt,
+        }))
+      };
+    } catch (error) {
+      this.logger.error('Error finding conversation by ID:', error);
+      return null;
+    }
+  }
+
+  async getConversations(): Promise<{ conversations: any[] }> {
+    try {
+      // Get all WhatsApp conversations from database
+      const conversations = await this.prisma.aIConversation.findMany({
+        where: {
+          type: 'WHATSAPP_CHAT'
+        },
+        include: {
+          chatMessages: {
+            orderBy: { createdAt: 'asc' }
+          }
+        },
+        orderBy: { createdAt: 'desc' }
+      });
+
+      const formattedConversations = conversations.map(conv => {
+        const phoneNumber = conv.metadata?.['phoneNumber'] as string;
+        const customerName = conv.metadata?.['customerName'] as string;
+        const status = conv.metadata?.['status'] as string || 'active';
+
+        return {
+          id: conv.id,
+          phoneNumber,
+          customerName: customerName || 'WhatsApp User',
+          status,
+          createdAt: conv.createdAt,
+          updatedAt: conv.chatMessages[conv.chatMessages.length - 1]?.updatedAt || conv.createdAt,
+          messages: conv.chatMessages.map(msg => ({
+            id: msg.id,
+            content: msg.content,
+            direction: msg.sender === 'CUSTOMER' ? 'inbound' : 'outbound',
+            messageType: 'text',
+            isFromAI: msg.sender === 'AI_ASSISTANT',
+            timestamp: msg.createdAt,
+            status: 'delivered' // Default status
+          }))
+        };
+      });
+
+      return { conversations: formattedConversations };
+    } catch (error) {
+      this.logger.error('Error getting conversations:', error);
+      return { conversations: [] };
+    }
+  }
+
+  // Public method to create or get lead for a conversation
+  async createOrGetLeadForConversation(phoneNumber: string, customerName?: string): Promise<any> {
+    return await this.createOrGetLead(phoneNumber, customerName);
+  }
+
+  // Public method to link a conversation to a lead
+  async linkConversationToLead(conversationId: string, leadId: string): Promise<void> {
+    try {
+      // Get current conversation metadata
+      const conversation = await this.prisma.aIConversation.findUnique({
+        where: { id: conversationId }
+      });
+      
+      if (conversation) {
+        const updatedMetadata = { 
+          ...conversation.metadata as any, 
+          leadId 
+        };
+        
+        await this.prisma.aIConversation.update({
+          where: { id: conversationId },
+          data: {
+            metadata: updatedMetadata
+          }
+        });
+        
+        this.logger.log(`Linked conversation ${conversationId} to lead ${leadId}`);
+      }
+    } catch (error) {
+      this.logger.error('Error linking conversation to lead:', error);
+      throw error;
+    }
   }
 }

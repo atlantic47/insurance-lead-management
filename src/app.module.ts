@@ -1,6 +1,9 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { ServeStaticModule } from '@nestjs/serve-static';
+import { ScheduleModule } from '@nestjs/schedule';
 import { APP_GUARD, APP_FILTER } from '@nestjs/core';
+import { join } from 'path';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { AuthModule } from './auth/auth.module';
@@ -19,6 +22,8 @@ import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
 import { RolesGuard } from './auth/guards/roles.guard';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { PrismaService } from './common/services/prisma.service';
+import { AIService } from './ai/ai.service';
+import { OpenAIService } from './ai/openai.service';
 
 @Module({
   imports: [
@@ -26,6 +31,11 @@ import { PrismaService } from './common/services/prisma.service';
       isGlobal: true,
       envFilePath: '.env',
     }),
+    ServeStaticModule.forRoot({
+      rootPath: join(__dirname, '..', 'public', 'widget'),
+      serveRoot: '/widget',
+    }),
+    ScheduleModule.forRoot(),
     AuthModule,
     UsersModule,
     LeadsModule,
@@ -43,6 +53,8 @@ import { PrismaService } from './common/services/prisma.service';
   providers: [
     AppService,
     PrismaService,
+    AIService,
+    OpenAIService,
     {
       provide: APP_GUARD,
       useClass: JwtAuthGuard,

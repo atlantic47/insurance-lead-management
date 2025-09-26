@@ -47,6 +47,18 @@ export class EmailService {
     direction: 'INBOUND' | 'OUTBOUND';
     leadId?: string;
   }) {
+    // Check if message already exists to prevent duplicates (if messageId is provided)
+    if (data.messageId) {
+      const existingMessage = await this.prisma.emailMessage.findUnique({
+        where: { messageId: data.messageId },
+      });
+
+      if (existingMessage) {
+        console.log(`Email message with ID ${data.messageId} already exists, skipping...`);
+        return existingMessage;
+      }
+    }
+
     return this.prisma.emailMessage.create({
       data: {
         ...data,

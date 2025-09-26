@@ -347,6 +347,23 @@ model EmailMessage {
   @@map("email_messages")
 }
 
+model AITrainingData {
+  id           String    @id @default(uuid())
+  type         String    // 'file' or 'url'
+  name         String    // filename or URL
+  content      String    @db.LongText
+  instructions String    @db.Text
+  status       String    @default("processing") // 'processing', 'processed', 'error'
+  error        String?   @db.Text
+  metadata     Json?     // Additional data (file info, URL info, etc.)
+  processedAt  DateTime?
+  
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@map("ai_training_data")
+}
+
 model AuditLog {
   id        String   @id @default(uuid())
   action    String   // CREATE, UPDATE, DELETE, LOGIN, etc.

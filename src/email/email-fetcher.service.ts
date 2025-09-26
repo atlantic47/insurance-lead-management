@@ -260,20 +260,4 @@ export class EmailFetcherService {
     }
   }
 
-  // Schedule regular email fetching (can be called by a cron job)
-  async scheduleEmailFetching(): Promise<void> {
-    const intervalMs = this.configService.get<number>('EMAIL_FETCH_INTERVAL') || 300000; // 5 minutes default
-    
-    setInterval(async () => {
-      this.logger.log('Starting scheduled email fetch...');
-      try {
-        await this.fetchNewEmails();
-        this.logger.log('Scheduled email fetch completed successfully');
-      } catch (error) {
-        this.logger.error('Scheduled email fetch failed:', error);
-      }
-    }, intervalMs);
-
-    this.logger.log(`Email fetching scheduled every ${intervalMs / 1000} seconds`);
-  }
 }

@@ -8,8 +8,16 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   const configService = app.get(ConfigService);
 
-  // Enable CORS
-  app.enableCors();
+
+  // Enable CORS for widget embedding
+  app.enableCors({
+    origin: true, // Allow all origins for widget functionality
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With'],
+    credentials: false, // Don't send cookies to external sites
+    preflightContinue: false,
+    optionsSuccessStatus: 204
+  });
 
   // Global validation pipe
   app.useGlobalPipes(

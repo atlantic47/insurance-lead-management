@@ -126,16 +126,6 @@ export class QueueService {
     await processor(job);
   }
 
-  getJobStats() {
-    const jobs = Array.from(this.jobs.values());
-    return {
-      total: jobs.length,
-      pending: jobs.filter(j => j.status === 'pending').length,
-      processing: jobs.filter(j => j.status === 'processing').length,
-      completed: jobs.filter(j => j.status === 'completed').length,
-      failed: jobs.filter(j => j.status === 'failed').length,
-    };
-  }
 
   getJob(jobId: string): Job | undefined {
     return this.jobs.get(jobId);
@@ -162,5 +152,23 @@ export class QueueService {
     if (jobsToRemove.length > 0) {
       this.logger.log(`Cleaned up ${jobsToRemove.length} old jobs`);
     }
+  }
+
+  clearAllJobs(): void {
+    const jobCount = this.jobs.size;
+    this.jobs.clear();
+    this.processingJobs.clear();
+    this.logger.log(`Cleared all ${jobCount} jobs from queue`);
+  }
+
+  getJobStats(): { total: number; pending: number; processing: number; completed: number; failed: number } {
+    const stats = { total: 0, pending: 0, processing: 0, completed: 0, failed: 0 };
+    
+    this.jobs.forEach(job => {
+      stats.total++;
+      stats[job.status]++;
+    });
+    
+    return stats;
   }
 }

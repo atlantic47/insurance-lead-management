@@ -16,6 +16,7 @@ import {
   ApiQuery,
 } from '@nestjs/swagger';
 import { ChatService } from './chat.service';
+import { WhatsAppConversationService } from '../whatsapp/whatsapp-conversation.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Public } from '../common/decorators/public.decorator';
@@ -25,8 +26,12 @@ import { Public } from '../common/decorators/public.decorator';
 @UseGuards(JwtAuthGuard)
 @Controller('chat')
 export class ChatController {
-  constructor(private readonly chatService: ChatService) {}
+  constructor(
+    private readonly chatService: ChatService,
+    private readonly whatsappConversationService: WhatsAppConversationService,
+  ) {}
 
+  @Public()
   @Get('conversations')
   @ApiOperation({ summary: 'Get all chat conversations' })
   @ApiQuery({ name: 'page', required: false, type: Number })
@@ -77,6 +82,7 @@ export class ChatController {
     return { ...result, escalatedBy: user.id, escalationReason: data.reason || 'manual_takeover' };
   }
 
+  @Public()
   @Post('send-message')
   @ApiOperation({ summary: 'Send message to WhatsApp conversation' })
   async sendMessage(
@@ -85,12 +91,30 @@ export class ChatController {
       message: string;
       conversationId?: string;
     },
-    @CurrentUser() user: any,
+    @CurrentUser() user?: any,
   ) {
     // Get lead to find phone number
-    const lead = await this.chatService.getLeadById(data.leadId);
+    let lead = await this.chatService.getLeadById(data.leadId);
+    
+    // If lead not found but we have a conversationId, try to find/create lead from conversation
+    if (!lead && data.conversationId) {
+      const conversation = await this.whatsappConversationService.findConversationById(data.conversationId);
+      if (conversation) {
+        // Create or get lead for this conversation
+        lead = await this.whatsappConversationService.createOrGetLeadForConversation(
+          conversation.phoneNumber, 
+          conversation.customerName
+        );
+        
+        // Link the conversation to the lead
+        if (lead) {
+          await this.whatsappConversationService.linkConversationToLead(data.conversationId, lead.id);
+        }
+      }
+    }
+    
     if (!lead) {
-      throw new Error('Lead not found');
+      throw new Error('Lead not found and could not be created from conversation');
     }
     
     if (!lead.phone) {
@@ -104,7 +128,10 @@ export class ChatController {
       platform: 'WHATSAPP',
       leadId: data.leadId,
       conversationId: data.conversationId,
-      metadata: { agentId: user.id, agentName: `${user.firstName} ${user.lastName}` },
+      metadata: { 
+        agentId: user?.id || 'system', 
+        agentName: user ? `${user.firstName} ${user.lastName}` : 'System Agent'
+      },
     });
 
     // Send WhatsApp message using the lead's phone number

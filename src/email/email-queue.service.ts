@@ -168,6 +168,12 @@ export class EmailQueueService implements OnModuleInit {
     return this.queueService.getJob(jobId);
   }
 
+  // Clear all jobs in queue
+  clearAllJobs() {
+    this.queueService.clearAllJobs();
+    return { message: 'All queue jobs cleared successfully' };
+  }
+
   // Manual methods for testing/admin use
   async triggerEmailFetchNow(): Promise<string> {
     return this.queueEmailFetch('manual');
