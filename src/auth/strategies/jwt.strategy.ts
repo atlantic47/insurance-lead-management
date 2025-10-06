@@ -36,6 +36,10 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       },
     });
 
+    if (!user || !user.isActive) {
+      return null;
+    }
+
     return user;
   }
 }

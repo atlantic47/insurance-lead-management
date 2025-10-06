@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../common/services/prisma.service';
 import { WhatsAppService, WhatsAppMessage, WhatsAppContact } from './whatsapp.service';
 import { OpenAIService } from '../ai/openai.service';
+import { AIService } from '../ai/ai.service';
 import { LeadSource, LeadStatus, InsuranceType } from '@prisma/client';
 
 export interface WhatsAppConversation {
@@ -36,6 +37,7 @@ export class WhatsAppConversationService {
     private prisma: PrismaService,
     private whatsappService: WhatsAppService,
     private openaiService: OpenAIService,
+    private aiService: AIService,
   ) {}
 
   async processIncomingMessage(
@@ -101,12 +103,16 @@ export class WhatsAppConversationService {
       const historyTexts = history.map(msg => msg.content);
       this.logger.log(`📚 Retrieved ${history.length} messages from conversation history`);
 
+      // Get training data context
+      const trainingContext = await this.getTrainingContext();
+      
       // Generate AI response
       this.logger.log(`🧠 Calling OpenAI service with message: "${message.text?.body}"`);
       const aiResponse = await this.openaiService.generateResponse(
         message.text?.body || '',
         conversation.customerName,
-        historyTexts
+        historyTexts,
+        trainingContext
       );
       
       this.logger.log(`🤖 AI Response generated:`, {
@@ -618,6 +624,35 @@ export class WhatsAppConversationService {
     } catch (error) {
       this.logger.error('Error linking conversation to lead:', error);
       throw error;
+    }
+  }
+
+  private async getTrainingContext(): Promise<string> {
+    try {
+      // Get all processed training data
+      const trainingData = await this.prisma.aITrainingData.findMany({
+        where: { status: 'processed' },
+        select: { content: true, instructions: true, name: true },
+        orderBy: { createdAt: 'desc' },
+      });
+
+      // Build context from training data
+      const context = trainingData.length > 0 
+        ? `KNOWLEDGE BASE (${trainingData.length} sources):\n\n` + 
+          trainingData.map((data, index) => 
+            `=== SOURCE ${index + 1}: ${data.name || 'Training Data'} ===\n${data.instructions ? `Instructions: ${data.instructions}\n\n` : ''}${data.content}`
+          ).join('\n\n')
+        : '';
+
+      this.logger.log(`📚 Found ${trainingData.length} training sources for context`);
+      if (trainingData.length > 0) {
+        this.logger.log('📖 Training sources:', trainingData.map(d => d.name).join(', '));
+      }
+
+      return context;
+    } catch (error) {
+      this.logger.error('Error getting training context:', error);
+      return '';
     }
   }
 }

@@ -85,27 +85,74 @@ export class AIService {
   }
 
   async chatbotResponse(input: string, leadId?: string) {
-    // Mock chatbot response - replace with actual AI service
-    const response = this.generateChatbotResponse(input);
+    try {
+      // Get all processed training data
+      const trainingData = await this.prisma.aITrainingData.findMany({
+        where: { status: 'processed' },
+        select: { content: true, instructions: true, name: true },
+        orderBy: { createdAt: 'desc' },
+      });
 
-    const aiConversation = await this.prisma.aIConversation.create({
-      data: {
-        type: 'CHATBOT',
+      // Build context from training data
+      const context = trainingData.length > 0
+        ? `KNOWLEDGE BASE (${trainingData.length} sources):\n\n` +
+          trainingData.map((data, index) =>
+            `=== SOURCE ${index + 1}: ${data.name || 'Training Data'} ===\n${data.content}`
+          ).join('\n\n')
+        : '';
+
+      console.log(`🤖 Chatbot - Found ${trainingData.length} training sources`);
+
+      // Get lead info if available
+      let customerName = 'Customer';
+      if (leadId) {
+        const lead = await this.prisma.lead.findUnique({ where: { id: leadId } });
+        if (lead) {
+          customerName = `${lead.firstName} ${lead.lastName}`;
+        }
+      }
+
+      // Generate response using OpenAI with training context
+      const aiResponse = await this.openaiService.generateResponse(
         input,
-        output: response,
-        confidence: 0.9,
-        leadId,
-        metadata: {
-          timestamp: new Date(),
-          channel: 'web-chat',
-        },
-      },
-    });
+        customerName,
+        [],
+        context
+      );
 
-    return {
-      response,
-      conversation: aiConversation,
-    };
+      const aiConversation = await this.prisma.aIConversation.create({
+        data: {
+          type: 'CHATBOT',
+          input,
+          output: aiResponse.response,
+          confidence: aiResponse.confidence,
+          leadId,
+          metadata: {
+            timestamp: new Date(),
+            channel: 'web-chat',
+            usedTrainingData: trainingData.length > 0,
+            trainingSourcesUsed: trainingData.length,
+            shouldEscalate: aiResponse.shouldEscalate,
+          },
+        },
+      });
+
+      return {
+        response: aiResponse.response,
+        message: aiResponse.message,
+        shouldEscalate: aiResponse.shouldEscalate,
+        confidence: aiResponse.confidence,
+        conversation: aiConversation,
+      };
+    } catch (error) {
+      console.error('Error in chatbot response:', error);
+      return {
+        response: 'I apologize, but I encountered an error. Please try again or contact our support team.',
+        message: 'I apologize, but I encountered an error. Please try again or contact our support team.',
+        shouldEscalate: true,
+        confidence: 0.1,
+      };
+    }
   }
 
   async getAIConversations(leadId?: string) {
@@ -583,22 +630,135 @@ export class AIService {
     conversationId: string,
     widgetId?: string,
     url?: string,
-    domain?: string
+    domain?: string,
+    userInfo?: { name?: string; email?: string; phone?: string }
   ) {
     try {
-      // Extract KYC information from the message
-      const kycInfo = await this.extractKYCInfo(message);
-      
+      console.log('🤖 Widget Chat - Message:', message);
+      console.log('📝 Widget Chat - Conversation ID:', conversationId);
+
+      // Get or create AI conversation record
+      let conversation = await this.prisma.aIConversation.findFirst({
+        where: {
+          metadata: {
+            path: ['conversationId'] as any,
+            equals: conversationId,
+          },
+        },
+        include: {
+          chatMessages: {
+            orderBy: { createdAt: 'asc' },
+            take: 10, // Last 10 messages for context
+          },
+          lead: true,
+        },
+      });
+
+      // Extract KYC information from the message or use provided userInfo
+      const kycInfo = userInfo
+        ? {
+            hasPersonalInfo: !!(userInfo.name || userInfo.email || userInfo.phone),
+            firstName: userInfo.name?.split(' ')[0],
+            lastName: userInfo.name?.split(' ').slice(1).join(' '),
+            email: userInfo.email,
+            phone: userInfo.phone,
+          }
+        : await this.extractKYCInfo(message);
+
       // Get or create lead if KYC info is found
-      let leadId: string | null = null;
-      if (kycInfo.hasPersonalInfo) {
+      let leadId: string | null = conversation?.leadId || null;
+      let leadCreated = false;
+
+      if (kycInfo.hasPersonalInfo && !leadId) {
         const lead = await this.createOrUpdateLeadFromKYC(conversationId, kycInfo, url, domain);
         leadId = lead.id;
+        leadCreated = true;
+        console.log('✅ Lead created:', lead.id);
       }
 
-      // Get widget configuration
-      const config = await this.getWidgetConfig(widgetId || 'default');
-      
+      // Create conversation if it doesn't exist
+      if (!conversation) {
+        conversation = await this.prisma.aIConversation.create({
+          data: {
+            type: 'WIDGET_CHAT',
+            input: message,
+            output: '',
+            confidence: 0,
+            leadId: leadId,
+            metadata: {
+              conversationId,
+              widgetId: widgetId || 'default',
+              url,
+              domain,
+              customerName: kycInfo.firstName || 'Widget User',
+              createdAt: new Date(),
+            },
+          },
+          include: {
+            chatMessages: true,
+            lead: true,
+          },
+        });
+      } else {
+        // Update conversation with leadId if we just created a lead
+        if (leadCreated) {
+          conversation = await this.prisma.aIConversation.update({
+            where: { id: conversation.id },
+            data: {
+              leadId: leadId,
+              metadata: {
+                ...(conversation.metadata as any),
+                leadId: leadId,
+                customerName: kycInfo.firstName || (conversation.metadata as any).customerName,
+              },
+            },
+            include: {
+              chatMessages: true,
+              lead: true,
+            },
+          });
+        }
+      }
+
+      // Check if conversation is already escalated
+      if (conversation.isEscalated) {
+        // Save customer message
+        await this.prisma.chatMessage.create({
+          data: {
+            content: message,
+            sender: 'CUSTOMER',
+            platform: 'WEBSITE',
+            conversationId: conversation.id,
+            leadId: leadId,
+            metadata: { url, domain },
+          },
+        });
+
+        return {
+          response: "Thank you for your message. One of our specialists will respond to you shortly.",
+          shouldEscalate: true,
+          alreadyEscalated: true,
+          confidence: 1.0,
+          intent: 'human_handoff',
+          leadCreated: leadCreated,
+          leadId: leadId,
+          conversationId: conversation.id,
+          needsUserInfo: false,
+        };
+      }
+
+      // Save customer message
+      await this.prisma.chatMessage.create({
+        data: {
+          content: message,
+          sender: 'CUSTOMER',
+          platform: 'WEBSITE',
+          conversationId: conversation.id,
+          leadId: leadId,
+          metadata: { url, domain, kycExtracted: kycInfo.hasPersonalInfo },
+        },
+      });
+
       // Get training data for context
       const trainingData = await this.prisma.aITrainingData.findMany({
         where: { status: 'processed' },
@@ -607,56 +767,78 @@ export class AIService {
       });
 
       // Build context from training data
-      const context = trainingData.length > 0 
-        ? `KNOWLEDGE BASE (${trainingData.length} sources):\n\n` + 
-          trainingData.map((data, index) => 
+      const context = trainingData.length > 0
+        ? `KNOWLEDGE BASE (${trainingData.length} sources):\n\n` +
+          trainingData.map((data, index) =>
             `=== SOURCE ${index + 1}: ${data.name || 'Training Data'} ===\n${data.content}`
           ).join('\n\n')
         : '';
 
+      // Build conversation history for context
+      const conversationHistory = conversation.chatMessages?.map((msg: any) => msg.content) || [];
+
       // Generate response using OpenAI with training context
       const response = await this.openaiService.generateResponse(
         message,
-        kycInfo.firstName || 'Widget User',
-        [],
+        kycInfo.firstName || (conversation as any).lead?.firstName || 'Customer',
+        conversationHistory,
         context
       );
 
-      // Save widget conversation
-      const conversation = await this.prisma.aIConversation.create({
+      // Check if we should escalate
+      const shouldEscalate = response.shouldEscalate || response.confidence < 0.5;
+      const needsUserInfo = shouldEscalate && !kycInfo.hasPersonalInfo;
+
+      // Save AI response message
+      await this.prisma.chatMessage.create({
         data: {
-          type: 'WIDGET_CHAT',
-          input: message,
+          content: response.response,
+          sender: 'AI_ASSISTANT',
+          platform: 'WEBSITE',
+          conversationId: conversation.id,
+          leadId: leadId,
+          metadata: {
+            confidence: response.confidence,
+            intent: response.intent,
+            shouldEscalate,
+          },
+        },
+      });
+
+      // Update conversation
+      await this.prisma.aIConversation.update({
+        where: { id: conversation.id },
+        data: {
           output: response.response,
           confidence: response.confidence,
           metadata: {
-            conversationId,
-            widgetId: widgetId || 'default',
-            url,
-            domain,
-            timestamp: new Date(),
-            leadId: leadId,
-            kycExtracted: kycInfo.hasPersonalInfo,
-            extractedInfo: kycInfo.hasPersonalInfo ? kycInfo : null,
+            ...(conversation.metadata as any),
+            lastMessageAt: new Date(),
+            messageCount: ((conversation as any).chatMessages?.length || 0) + 2,
           },
         },
       });
 
       return {
         response: response.response,
-        shouldEscalate: response.shouldEscalate,
+        shouldEscalate: shouldEscalate,
+        needsUserInfo: needsUserInfo,
         confidence: response.confidence,
         intent: response.intent,
-        leadCreated: !!leadId,
+        leadCreated: leadCreated,
         leadId: leadId,
+        conversationId: conversation.id,
+        alreadyEscalated: false,
       };
     } catch (error) {
       console.error('Widget chat error:', error);
       return {
         response: 'I apologize, but I encountered an error. Please try again.',
         shouldEscalate: true,
+        needsUserInfo: true,
         confidence: 0.1,
         leadCreated: false,
+        conversationId: conversationId,
       };
     }
   }
@@ -682,7 +864,7 @@ export class AIService {
           themeColor: config.themeColor || '#0052cc',
           position: config.position || 'bottom-right',
           profileIcon: config.profileIcon || 'default',
-          apiUrl: process.env.APP_URL || 'http://localhost:3001/api',
+          apiUrl: process.env.APP_URL || 'http://localhost:3001',
           allowedDomains: ['*'],
         };
       }
@@ -776,6 +958,221 @@ export class AIService {
       console.error('Error saving widget config:', error);
       throw new BadRequestException('Failed to save widget configuration');
     }
+  }
+
+  async getWidgetConversations(page = 1, limit = 20) {
+    const skip = (page - 1) * limit;
+
+    const [conversations, total] = await Promise.all([
+      this.prisma.aIConversation.findMany({
+        where: {
+          type: 'WIDGET_CHAT',
+        },
+        skip,
+        take: limit,
+        include: {
+          chatMessages: {
+            orderBy: { createdAt: 'asc' },
+          },
+          lead: {
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+              phone: true,
+              email: true,
+              status: true,
+            },
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+      }),
+      this.prisma.aIConversation.count({
+        where: {
+          type: 'WIDGET_CHAT',
+        },
+      }),
+    ]);
+
+    const formattedConversations = conversations.map((conv) => {
+      const metadata = conv.metadata as any;
+      const customerName = metadata?.customerName || conv.lead?.firstName || 'Widget User';
+
+      return {
+        id: conv.id,
+        isEscalated: conv.isEscalated,
+        escalatedAt: conv.escalatedAt,
+        createdAt: conv.createdAt,
+        lead: conv.lead || {
+          id: metadata?.leadId || `temp_${conv.id}`,
+          firstName: customerName,
+          lastName: '',
+          phone: metadata?.phone || '',
+          email: metadata?.email || '',
+          status: 'NEW' as any,
+        },
+        metadata: {
+          widgetId: metadata?.widgetId,
+          url: metadata?.url,
+          domain: metadata?.domain,
+          messageCount: metadata?.messageCount || conv.chatMessages?.length || 0,
+          lastMessageAt: metadata?.lastMessageAt || conv.createdAt,
+        },
+        chatMessages: conv.chatMessages.map((msg) => ({
+          id: msg.id,
+          content: msg.content,
+          sender: msg.sender,
+          platform: msg.platform,
+          createdAt: msg.createdAt.toISOString(),
+          isRead: msg.isRead,
+        })),
+      };
+    });
+
+    return {
+      data: {
+        conversations: formattedConversations,
+        total,
+        page,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+  }
+
+  async getWidgetConversation(conversationId: string) {
+    const conversation = await this.prisma.aIConversation.findFirst({
+      where: {
+        id: conversationId,
+        type: 'WIDGET_CHAT',
+      },
+      include: {
+        chatMessages: {
+          orderBy: { createdAt: 'asc' },
+        },
+        lead: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            phone: true,
+            email: true,
+            status: true,
+          },
+        },
+      },
+    });
+
+    if (!conversation) {
+      throw new NotFoundException('Conversation not found');
+    }
+
+    const metadata = conversation.metadata as any;
+
+    return {
+      id: conversation.id,
+      isEscalated: conversation.isEscalated,
+      escalatedAt: conversation.escalatedAt,
+      createdAt: conversation.createdAt,
+      lead: conversation.lead || {
+        id: metadata?.leadId || `temp_${conversation.id}`,
+        firstName: metadata?.customerName || 'Widget User',
+        lastName: '',
+        phone: metadata?.phone || '',
+        email: metadata?.email || '',
+        status: 'NEW',
+      },
+      metadata: {
+        widgetId: metadata?.widgetId,
+        url: metadata?.url,
+        domain: metadata?.domain,
+      },
+      chatMessages: conversation.chatMessages.map((msg) => ({
+        id: msg.id,
+        content: msg.content,
+        sender: msg.sender,
+        platform: msg.platform,
+        createdAt: msg.createdAt.toISOString(),
+        isRead: msg.isRead,
+        metadata: msg.metadata,
+      })),
+    };
+  }
+
+  async takeoverWidgetConversation(conversationId: string, userId: string, reason?: string) {
+    const conversation = await this.prisma.aIConversation.findUnique({
+      where: { id: conversationId },
+      include: { lead: true },
+    });
+
+    if (!conversation) {
+      throw new NotFoundException('Conversation not found');
+    }
+
+    // Escalate the conversation
+    await this.prisma.aIConversation.update({
+      where: { id: conversationId },
+      data: {
+        isEscalated: true,
+        escalatedAt: new Date(),
+        userId: userId,
+      },
+    });
+
+    // Create a system message
+    await this.prisma.chatMessage.create({
+      data: {
+        content: `Conversation taken over by human agent. Reason: ${reason || 'Manual takeover'}`,
+        sender: 'AI_ASSISTANT',
+        platform: 'WEBSITE',
+        conversationId: conversationId,
+        leadId: conversation.leadId,
+        metadata: {
+          system: true,
+          userId: userId,
+          reason: reason,
+          timestamp: new Date(),
+        },
+      },
+    });
+
+    return {
+      success: true,
+      message: 'Conversation taken over successfully',
+      conversationId: conversationId,
+      escalatedBy: userId,
+    };
+  }
+
+  async sendWidgetMessage(conversationId: string, message: string, user: any) {
+    const conversation = await this.prisma.aIConversation.findUnique({
+      where: { id: conversationId },
+      include: { lead: true },
+    });
+
+    if (!conversation) {
+      throw new NotFoundException('Conversation not found');
+    }
+
+    // Save human agent message
+    await this.prisma.chatMessage.create({
+      data: {
+        content: message,
+        sender: 'HUMAN_AGENT',
+        platform: 'WEBSITE',
+        conversationId: conversationId,
+        leadId: conversation.leadId,
+        metadata: {
+          agentId: user.id,
+          agentName: `${user.firstName} ${user.lastName}`,
+          timestamp: new Date(),
+        },
+      },
+    });
+
+    return {
+      success: true,
+      message: 'Message sent successfully',
+    };
   }
 
   private async processTrainingData(id: string, content: string, instructions: string) {

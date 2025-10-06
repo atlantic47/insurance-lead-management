@@ -95,6 +95,9 @@ model User {
   tasks             Task[]
   auditLogs         AuditLog[]
   aiConversations   AIConversation[]
+  contactGroups     ContactGroup[]     @relation("ContactGroupCreator")
+  campaigns         Campaign[]         @relation("CampaignCreator")
+  campaignTemplates CampaignTemplate[] @relation("TemplateCreator")
 
   @@map("users")
 }
@@ -161,6 +164,7 @@ model Lead {
   leadProducts          LeadProduct[]
   chatMessages          ChatMessage[]
   emailMessages         EmailMessage[]
+  contactGroups         LeadContactGroup[]
 
   @@map("leads")
 }
@@ -381,4 +385,146 @@ model AuditLog {
   createdAt DateTime @default(now())
 
   @@map("audit_logs")
+}
+
+enum ContactGroupType {
+  WHATSAPP
+  EMAIL
+  BOTH
+}
+
+enum CampaignType {
+  WHATSAPP
+  EMAIL
+}
+
+enum CampaignStatus {
+  DRAFT
+  SCHEDULED
+  SENDING
+  SENT
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+model ContactGroup {
+  id          String           @id @default(uuid())
+  name        String
+  description String?
+  type        ContactGroupType
+  color       String?          // For UI display (e.g., "#3B82F6")
+
+  // Relations
+  leads       LeadContactGroup[]
+  campaigns   Campaign[]
+  createdById String
+  createdBy   User             @relation("ContactGroupCreator", fields: [createdById], references: [id])
+
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  @@map("contact_groups")
+}
+
+// Junction table for many-to-many relationship between Leads and ContactGroups
+model LeadContactGroup {
+  id             String       @id @default(uuid())
+  leadId         String
+  lead           Lead         @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  contactGroupId String
+  contactGroup   ContactGroup @relation(fields: [contactGroupId], references: [id], onDelete: Cascade)
+
+  addedAt        DateTime     @default(now())
+
+  @@unique([leadId, contactGroupId])
+  @@map("lead_contact_groups")
+}
+
+model CampaignTemplate {
+  id          String       @id @default(uuid())
+  name        String
+  description String?
+  type        CampaignType // WHATSAPP or EMAIL
+
+  // Email template fields
+  subject     String?      // For email only
+  content     String       @db.LongText // For email: plain text content with {firstName}, {lastName} variables
+  htmlContent String?      @db.LongText // For email: HTML content with inline CSS styling
+  variables   Json?        // Available variables for email template (e.g., {firstName}, {lastName})
+  isHtml      Boolean      @default(false) // Whether to use HTML content or plain text
+
+  // WhatsApp Business API template fields
+  whatsappTemplateName String?     // Meta-approved template name (e.g., "welcome_message")
+  whatsappLanguageCode String?     // Language code (e.g., "en", "es")
+  whatsappComponents   Json?       // Template structure with header, body, footer, buttons
+  whatsappParameters   Json?       // Mapping for numbered placeholders {{1}}, {{2}} to lead fields
+
+  // Relations
+  createdById String
+  createdBy   User         @relation("TemplateCreator", fields: [createdById], references: [id])
+  campaigns   Campaign[]
+
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  @@map("campaign_templates")
+}
+
+model Campaign {
+  id                String         @id @default(uuid())
+  name              String
+  description       String?
+  type              CampaignType   // WHATSAPP or EMAIL
+  status            CampaignStatus @default(DRAFT)
+
+  // Template
+  templateId        String?
+  template          CampaignTemplate? @relation(fields: [templateId], references: [id])
+
+  // Custom content (if not using template)
+  subject           String?        // For email
+  content           String?        @db.LongText
+
+  // Target audience
+  contactGroupId    String
+  contactGroup      ContactGroup   @relation(fields: [contactGroupId], references: [id])
+
+  // Scheduling
+  scheduledAt       DateTime?
+  sentAt            DateTime?
+  completedAt       DateTime?
+
+  // Stats
+  totalRecipients   Int            @default(0)
+  sentCount         Int            @default(0)
+  failedCount       Int            @default(0)
+  deliveredCount    Int            @default(0)
+  openedCount       Int            @default(0)
+  clickedCount      Int            @default(0)
+
+  // Relations
+  createdById       String
+  createdBy         User           @relation("CampaignCreator", fields: [createdById], references: [id])
+
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  @@map("campaigns")
+}
+
+// System Settings Model
+model SystemSettings {
+  id        String   @id @default(uuid())
+  category  String   // SMTP, WHATSAPP, OPENAI, FACEBOOK, EMAIL, GENERAL
+  key       String   // Specific setting key
+  value     String   @db.Text // Setting value (encrypted for sensitive data)
+  isEncrypted Boolean @default(false) // Whether the value is encrypted
+  description String? @db.Text // Description of the setting
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([category, key])
+  @@map("system_settings")
 }

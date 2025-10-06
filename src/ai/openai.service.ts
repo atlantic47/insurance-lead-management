@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import OpenAI from 'openai';
+import { SettingsService } from '../settings/settings.service';
 
 export interface AIResponse {
   message: string;
@@ -14,17 +15,49 @@ export interface AIResponse {
 export class OpenAIService {
   private readonly logger = new Logger(OpenAIService.name);
   private openai: OpenAI | null;
+  private apiKey: string | null;
+  private model: string;
 
-  constructor(private configService: ConfigService) {
-    const apiKey = this.configService.get('OPENAI_API_KEY');
-    if (!apiKey || apiKey === 'your-openai-api-key-here') {
+  constructor(
+    private configService: ConfigService,
+    private settingsService: SettingsService,
+  ) {
+    // Initialize synchronously first with env vars
+    this.apiKey = this.configService.get('OPENAI_API_KEY') || null;
+    this.model = this.configService.get('OPENAI_MODEL') || 'gpt-4';
+
+    if (!this.apiKey || this.apiKey === 'your-openai-api-key-here') {
       this.logger.warn('OpenAI API key not configured. AI responses will be simulated.');
       this.openai = null;
     } else {
       this.openai = new OpenAI({
-        apiKey: apiKey,
+        apiKey: this.apiKey,
+      });
+      this.logger.log('✅ OpenAI initialized successfully');
+    }
+  }
+
+  private async initializeOpenAI() {
+    // Try to get from database first, fallback to env
+    const dbApiKey = await this.settingsService.getSetting('OPENAI', 'api_key');
+    const dbModel = await this.settingsService.getSetting('OPENAI', 'model');
+
+    this.apiKey = dbApiKey || this.configService.get('OPENAI_API_KEY') || null;
+    this.model = dbModel || this.configService.get('OPENAI_MODEL') || 'gpt-4';
+
+    if (!this.apiKey || this.apiKey === 'your-openai-api-key-here') {
+      this.logger.warn('OpenAI API key not configured. AI responses will be simulated.');
+      this.openai = null;
+    } else {
+      this.openai = new OpenAI({
+        apiKey: this.apiKey,
       });
     }
+  }
+
+  async refreshConfiguration() {
+    // Call this method to refresh OpenAI settings after user updates them
+    await this.initializeOpenAI();
   }
 
   async generateResponse(
@@ -52,7 +85,7 @@ export class OpenAIService {
 
       this.logger.log('🚀 Calling OpenAI API...');
       const completion = await this.openai.chat.completions.create({
-        model: this.configService.get('OPENAI_MODEL') || 'gpt-4',
+        model: this.model,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: conversationContext }
@@ -83,13 +116,21 @@ export class OpenAIService {
     } catch (error) {
       this.logger.error('❌ Error generating AI response:', error);
       this.logger.error('Error details:', error.message);
+      this.logger.error('Error name:', error.name);
+      this.logger.error('Error stack:', error.stack);
       if (error.response) {
-        this.logger.error('API response error:', error.response.data);
+        this.logger.error('API response error:', JSON.stringify(error.response.data));
       }
-      
+      if (error.code) {
+        this.logger.error('Error code:', error.code);
+      }
+      if (error.status) {
+        this.logger.error('HTTP status:', error.status);
+      }
+
       return {
-        message: 'I apologize, but I cannot process your request right now. Let me connect you with a human agent.',
-        response: 'I apologize, but I cannot process your request right now. Let me connect you with a human agent.',
+        message: 'I apologize, but I encountered an error while processing your message. Please try again or contact our support team.',
+        response: 'I apologize, but I encountered an error while processing your message. Please try again or contact our support team.',
         shouldEscalate: true,
         confidence: 0
       };

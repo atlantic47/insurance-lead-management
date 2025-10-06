@@ -8,7 +8,8 @@ import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../common/services/prisma.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
-import { PaginationDto, PaginationResult } from '../common/dto/pagination.dto';
+import { UserQueryDto } from './dto/user-query.dto';
+import { PaginationResult } from '../common/dto/pagination.dto';
 
 @Injectable()
 export class UsersService {
@@ -44,20 +45,31 @@ export class UsersService {
     });
   }
 
-  async findAll(paginationDto: PaginationDto): Promise<PaginationResult<any>> {
-    const { page, limit, search, sortBy, sortOrder } = paginationDto;
+  async findAll(queryDto: UserQueryDto): Promise<PaginationResult<any>> {
+    const { page, limit, search, sortBy, sortOrder, role, isActive } = queryDto;
     const skip = (page - 1) * limit;
 
-    const where = search
-      ? {
-          OR: [
-            { firstName: { contains: search } },
-            { lastName: { contains: search } },
-            { email: { contains: search } },
-            { phone: { contains: search } },
-          ],
-        }
-      : {};
+    const where: any = {};
+
+    // Search filter
+    if (search) {
+      where.OR = [
+        { firstName: { contains: search } },
+        { lastName: { contains: search } },
+        { email: { contains: search } },
+        { phone: { contains: search } },
+      ];
+    }
+
+    // Role filter
+    if (role) {
+      where.role = role;
+    }
+
+    // Active status filter
+    if (isActive !== undefined) {
+      where.isActive = isActive;
+    }
 
     const orderBy = sortBy
       ? { [sortBy]: sortOrder }

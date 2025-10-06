@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
+import { SettingsService } from '../settings/settings.service';
 import axios from 'axios';
 
 @Injectable()
@@ -9,7 +10,10 @@ export class WhatsAppTokenManagerService {
   private currentToken: string;
   private tokenExpiresAt: Date;
 
-  constructor(private configService: ConfigService) {
+  constructor(
+    private configService: ConfigService,
+    private settingsService: SettingsService,
+  ) {
     // Don't use env token - we'll generate fresh tokens
     this.currentToken = '';
     this.tokenExpiresAt = new Date(0); // Force immediate refresh
@@ -36,9 +40,10 @@ export class WhatsAppTokenManagerService {
   async refreshToken(): Promise<void> {
     try {
       this.logger.log('Attempting to refresh WhatsApp access token...');
-      
-      const appId = this.configService.get('FACEBOOK_APP_ID');
-      const appSecret = this.configService.get('FACEBOOK_APP_SECRET');
+
+      // Try to get from database first, fallback to env
+      const appId = await this.settingsService.getSetting('FACEBOOK', 'app_id') || this.configService.get('FACEBOOK_APP_ID');
+      const appSecret = await this.settingsService.getSetting('FACEBOOK', 'app_secret') || this.configService.get('FACEBOOK_APP_SECRET');
       
       if (!appId || !appSecret || appId === 'your-facebook-app-id') {
         this.logger.warn('❌ Facebook app credentials not configured properly');
@@ -116,7 +121,7 @@ export class WhatsAppTokenManagerService {
       }
 
       // Check if token has WhatsApp Business permissions by trying to access phone number
-      const phoneNumberId = this.configService.get('WHATSAPP_PHONE_NUMBER_ID');
+      const phoneNumberId = await this.settingsService.getSetting('WHATSAPP', 'phone_number_id') || this.configService.get('WHATSAPP_PHONE_NUMBER_ID');
       if (phoneNumberId) {
         try {
           const phoneResponse = await axios.get(`https://graph.facebook.com/v18.0/${phoneNumberId}`, {
@@ -147,8 +152,8 @@ export class WhatsAppTokenManagerService {
   // Generate a new long-lived token from a short-lived one
   async exchangeForLongLivedToken(shortLivedToken: string): Promise<string> {
     try {
-      const appId = this.configService.get('FACEBOOK_APP_ID');
-      const appSecret = this.configService.get('FACEBOOK_APP_SECRET');
+      const appId = await this.settingsService.getSetting('FACEBOOK', 'app_id') || this.configService.get('FACEBOOK_APP_ID');
+      const appSecret = await this.settingsService.getSetting('FACEBOOK', 'app_secret') || this.configService.get('FACEBOOK_APP_SECRET');
 
       const response = await axios.get('https://graph.facebook.com/oauth/access_token', {
         params: {
@@ -225,9 +230,9 @@ export class WhatsAppTokenManagerService {
   private async generateDevelopmentToken(): Promise<void> {
     try {
       this.logger.log('🔧 Generating development token...');
-      
-      const appId = this.configService.get('FACEBOOK_APP_ID');
-      const appSecret = this.configService.get('FACEBOOK_APP_SECRET');
+
+      const appId = await this.settingsService.getSetting('FACEBOOK', 'app_id') || this.configService.get('FACEBOOK_APP_ID');
+      const appSecret = await this.settingsService.getSetting('FACEBOOK', 'app_secret') || this.configService.get('FACEBOOK_APP_SECRET');
       
       if (!appId || !appSecret) {
         this.logger.error('❌ Missing Facebook app credentials');

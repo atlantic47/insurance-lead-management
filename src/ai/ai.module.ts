@@ -5,10 +5,12 @@ import { AIService } from './ai.service';
 import { AIController } from './ai.controller';
 import { OpenAIService } from './openai.service';
 import { PrismaService } from '../common/services/prisma.service';
+import { SettingsModule } from '../settings/settings.module';
 
 @Module({
   imports: [
     ConfigModule,
+    SettingsModule,
     MulterModule.register({
       limits: {
         fileSize: 10 * 1024 * 1024, // 10MB limit

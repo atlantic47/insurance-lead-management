@@ -4,6 +4,7 @@ import { FilesInterceptor } from '@nestjs/platform-express';
 import { AIService } from './ai.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { Public } from '../common/decorators/public.decorator';
+import { CurrentUser } from '../common/decorators/current-user.decorator';
 
 @ApiTags('AI')
 @Controller('ai')
@@ -160,14 +161,59 @@ export class AIController {
     widgetId?: string;
     url?: string;
     domain?: string;
+    userInfo?: { name?: string; email?: string; phone?: string };
   }) {
     return this.aiService.handleWidgetChat(
       body.message,
       body.conversationId,
       body.widgetId,
       body.url,
-      body.domain
+      body.domain,
+      body.userInfo
     );
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @Get('widget/conversations')
+  @ApiOperation({ summary: 'Get all widget chat conversations' })
+  async getWidgetConversations(
+    @Query('page') page = 1,
+    @Query('limit') limit = 20,
+  ) {
+    return this.aiService.getWidgetConversations(+page, +limit);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @Get('widget/conversations/:conversationId')
+  @ApiOperation({ summary: 'Get specific widget conversation with messages' })
+  async getWidgetConversation(@Param('conversationId') conversationId: string) {
+    return this.aiService.getWidgetConversation(conversationId);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @Post('widget/conversations/:conversationId/takeover')
+  @ApiOperation({ summary: 'Take over widget conversation from AI' })
+  async takeoverConversation(
+    @Param('conversationId') conversationId: string,
+    @Body() data: { reason?: string },
+    @CurrentUser() user: any,
+  ) {
+    return this.aiService.takeoverWidgetConversation(conversationId, user.id, data.reason);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @Post('widget/conversations/:conversationId/message')
+  @ApiOperation({ summary: 'Send message in widget conversation as human agent' })
+  async sendWidgetMessage(
+    @Param('conversationId') conversationId: string,
+    @Body() data: { message: string },
+    @CurrentUser() user: any,
+  ) {
+    return this.aiService.sendWidgetMessage(conversationId, data.message, user);
   }
 
   @Public()
@@ -186,16 +232,25 @@ export class AIController {
     
     try {
       const widgetPath = path.join(process.cwd(), 'public', 'widget', 'chatbot-widget.js');
+      
+      if (!fs.existsSync(widgetPath)) {
+        throw new Error(`Widget file not found at: ${widgetPath}`);
+      }
+      
       const widgetScript = fs.readFileSync(widgetPath, 'utf8');
       
       res.setHeader('Content-Type', 'application/javascript');
       res.setHeader('Cache-Control', 'public, max-age=3600');
       res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
       res.send(widgetScript);
     } catch (error) {
+      console.error('Widget script error:', error);
       res.status(404).json({
         error: 'Widget script not found',
-        message: 'Please ensure the widget script is properly deployed'
+        message: error.message || 'Please ensure the widget script is properly deployed',
+        path: path.join(process.cwd(), 'public', 'widget', 'chatbot-widget.js')
       });
     }
   }

@@ -18,6 +18,9 @@ import { ReportsModule } from './reports/reports.module';
 import { ChatModule } from './chat/chat.module';
 import { EmailModule } from './email/email.module';
 import { WhatsAppModule } from './whatsapp/whatsapp.module';
+import { ContactGroupsModule } from './contact-groups/contact-groups.module';
+import { CampaignsModule } from './campaigns/campaigns.module';
+import { SettingsModule } from './settings/settings.module';
 import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
 import { RolesGuard } from './auth/guards/roles.guard';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
@@ -32,8 +35,15 @@ import { OpenAIService } from './ai/openai.service';
       envFilePath: '.env',
     }),
     ServeStaticModule.forRoot({
-      rootPath: join(__dirname, '..', 'public', 'widget'),
+      rootPath: join(process.cwd(), 'public', 'widget'),
       serveRoot: '/widget',
+      serveStaticOptions: {
+        setHeaders: (res) => {
+          res.set('Access-Control-Allow-Origin', '*');
+          res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+          res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+        },
+      },
     }),
     ScheduleModule.forRoot(),
     AuthModule,
@@ -48,6 +58,9 @@ import { OpenAIService } from './ai/openai.service';
     ChatModule,
     EmailModule,
     WhatsAppModule,
+    ContactGroupsModule,
+    CampaignsModule,
+    SettingsModule,
   ],
   controllers: [AppController],
   providers: [

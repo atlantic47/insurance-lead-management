@@ -66,6 +66,35 @@ export class ClientsService {
     };
   }
 
+  async create(createClientDto: any) {
+    const { firstName, lastName, email, phone, policyNumber, premium, commission, startDate, renewalDate } = createClientDto;
+
+    const client = await this.prisma.client.create({
+      data: {
+        firstName,
+        lastName,
+        email,
+        phone,
+        policyNumber,
+        premium: premium || 0,
+        commission: commission || 0,
+        startDate: startDate ? new Date(startDate) : null,
+        renewalDate: renewalDate ? new Date(renewalDate) : null,
+        isActive: true,
+      },
+      include: {
+        product: true,
+        company: true,
+      },
+    });
+
+    return {
+      success: true,
+      message: 'Client created successfully',
+      data: client,
+    };
+  }
+
   async findOne(id: string) {
     const client = await this.prisma.client.findUnique({
       where: { id },
@@ -94,7 +123,46 @@ export class ClientsService {
       throw new NotFoundException('Client not found');
     }
 
-    return client;
+    return {
+      success: true,
+      data: client,
+    };
+  }
+
+  async update(id: string, updateClientDto: any) {
+    const client = await this.prisma.client.findUnique({ where: { id } });
+
+    if (!client) {
+      throw new NotFoundException('Client not found');
+    }
+
+    const { firstName, lastName, email, phone, policyNumber, premium, commission, startDate, renewalDate, isActive } = updateClientDto;
+
+    const updatedClient = await this.prisma.client.update({
+      where: { id },
+      data: {
+        ...(firstName !== undefined && { firstName }),
+        ...(lastName !== undefined && { lastName }),
+        ...(email !== undefined && { email }),
+        ...(phone !== undefined && { phone }),
+        ...(policyNumber !== undefined && { policyNumber }),
+        ...(premium !== undefined && { premium }),
+        ...(commission !== undefined && { commission }),
+        ...(startDate !== undefined && { startDate: startDate ? new Date(startDate) : null }),
+        ...(renewalDate !== undefined && { renewalDate: renewalDate ? new Date(renewalDate) : null }),
+        ...(isActive !== undefined && { isActive }),
+      },
+      include: {
+        product: true,
+        company: true,
+      },
+    });
+
+    return {
+      success: true,
+      message: 'Client updated successfully',
+      data: updatedClient,
+    };
   }
 
   async getClientStats() {

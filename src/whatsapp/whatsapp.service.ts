@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { WhatsAppTokenManagerService } from './whatsapp-token-manager.service';
+import { SettingsService } from '../settings/settings.service';
 import axios from 'axios';
 
 export interface WhatsAppMessage {
@@ -24,10 +25,11 @@ export interface WhatsAppContact {
 export class WhatsAppService {
   private readonly logger = new Logger(WhatsAppService.name);
   private readonly baseUrl = 'https://graph.facebook.com/v18.0';
-  
+
   constructor(
     private configService: ConfigService,
     private tokenManager: WhatsAppTokenManagerService,
+    private settingsService: SettingsService,
   ) {}
 
   private async getHeaders() {
@@ -42,12 +44,14 @@ export class WhatsAppService {
     let retryCount = 0;
     const maxRetries = 2;
 
-    // Add test mode flag for debugging
-    const isTestMode = this.configService.get('NODE_ENV') === 'development';
+    // Check if WhatsApp should run in production mode
+    const isProductionMode = this.configService.get('WHATSAPP_PRODUCTION_MODE') === 'true';
+    const isTestMode = !isProductionMode;
 
     while (retryCount <= maxRetries) {
       try {
-        const phoneNumberId = this.configService.get('WHATSAPP_PHONE_NUMBER_ID');
+        // Try to get from database first, fallback to env
+        const phoneNumberId = await this.settingsService.getSetting('WHATSAPP', 'phone_number_id') || this.configService.get('WHATSAPP_PHONE_NUMBER_ID');
         const url = `${this.baseUrl}/${phoneNumberId}/messages`;
         
         const payload = {

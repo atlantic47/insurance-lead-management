@@ -1,31 +1,47 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as nodemailer from 'nodemailer';
+import { SettingsService } from '../settings/settings.service';
 
 @Injectable()
 export class SmtpEmailService {
   private readonly logger = new Logger(SmtpEmailService.name);
   private transporter: nodemailer.Transporter;
 
-  constructor(private configService: ConfigService) {
+  constructor(
+    private configService: ConfigService,
+    private settingsService: SettingsService,
+  ) {
     this.createTransporter();
   }
 
-  private createTransporter() {
+  private async createTransporter() {
+    // Try to get settings from database first, fallback to env variables
+    const smtpHost = await this.settingsService.getSetting('SMTP', 'host') || this.configService.get<string>('SMTP_HOST');
+    const smtpPort = await this.settingsService.getSetting('SMTP', 'port') || this.configService.get<string>('SMTP_PORT', '465');
+    const smtpSecure = await this.settingsService.getSetting('SMTP', 'secure') || this.configService.get<string>('SMTP_SECURE', 'true');
+    const smtpUser = await this.settingsService.getSetting('SMTP', 'user') || this.configService.get<string>('SMTP_USER');
+    const smtpPass = await this.settingsService.getSetting('SMTP', 'pass') || this.configService.get<string>('SMTP_PASS');
+
     // Use custom SMTP server configuration
     this.transporter = nodemailer.createTransport({
-      host: this.configService.get<string>('SMTP_HOST'),
-      port: parseInt(this.configService.get<string>('SMTP_PORT', '465')),
-      secure: this.configService.get<string>('SMTP_SECURE') === 'true', // true for 465, false for other ports
+      host: smtpHost,
+      port: parseInt(smtpPort),
+      secure: smtpSecure === 'true', // true for 465, false for other ports
       auth: {
-        user: this.configService.get<string>('SMTP_USER'),
-        pass: this.configService.get<string>('SMTP_PASS'),
+        user: smtpUser,
+        pass: smtpPass,
       },
       tls: {
         // Do not fail on invalid certs for development
         rejectUnauthorized: false,
       },
     });
+  }
+
+  async refreshTransporter() {
+    // Call this method to refresh SMTP settings after user updates them
+    await this.createTransporter();
   }
 
   async sendEmail(emailData: {
@@ -42,8 +58,10 @@ export class SmtpEmailService {
     }>;
   }): Promise<{ success: boolean; messageId?: string; error?: string }> {
     try {
+      const smtpFrom = await this.settingsService.getSetting('SMTP', 'from') || this.configService.get<string>('SMTP_FROM') || 'noreply@insurance.com';
+
       const mailOptions = {
-        from: emailData.from || this.configService.get<string>('SMTP_FROM') || 'noreply@insurance.com',
+        from: emailData.from || smtpFrom,
         to: emailData.to,
         cc: emailData.cc,
         bcc: emailData.bcc,
