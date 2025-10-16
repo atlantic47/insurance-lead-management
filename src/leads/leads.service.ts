@@ -3,27 +3,40 @@ import {
   NotFoundException,
   BadRequestException,
   ForbiddenException,
+  Inject,
+  forwardRef,
 } from '@nestjs/common';
 import { PrismaService } from '../common/services/prisma.service';
+import { getTenantContext } from '../common/context/tenant-context';
 import { CreateLeadDto } from './dto/create-lead.dto';
 import { UpdateLeadDto } from './dto/update-lead.dto';
 import { LeadQueryDto } from './dto/lead-query.dto';
 import { PaginationResult } from '../common/dto/pagination.dto';
 import { UserRole, LeadStatus } from '@prisma/client';
+import { NotificationsService } from '../notifications/notifications.service';
 
 @Injectable()
 export class LeadsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    @Inject(forwardRef(() => NotificationsService))
+    private notificationsService: NotificationsService,
+  ) {}
 
   async create(createLeadDto: CreateLeadDto, userId?: string) {
-    const leadData = {
-      ...createLeadDto,
-      assignedUserId: createLeadDto.assignedUserId || userId,
-      score: this.calculateInitialScore(createLeadDto),
-    };
+    const assignedUserId = createLeadDto.assignedUserId || userId;
+    const context = getTenantContext();
+    const tenantId = context?.tenantId || 'default-tenant-000';
+
+    const { assignedUserId: _, ...dtoData } = createLeadDto as any;
 
     return this.prisma.lead.create({
-      data: leadData,
+      data: {
+        ...dtoData,
+        assignedUser: assignedUserId ? { connect: { id: assignedUserId } } : undefined,
+        tenant: { connect: { id: tenantId } },
+        score: this.calculateInitialScore(createLeadDto),
+      },
       include: {
         assignedUser: {
           select: {
@@ -45,6 +58,9 @@ export class LeadsService {
     const skip = (page - 1) * limit;
 
     let where: any = {};
+
+    // CRITICAL: Add tenant filter first
+    where = this.prisma.addTenantFilter(where);
 
     if (currentUser.role === UserRole.AGENT) {
       where.assignedUserId = currentUser.id;
@@ -116,7 +132,10 @@ export class LeadsService {
   }
 
   async findOne(id: string, currentUser: any) {
-    const where: any = { id };
+    let where: any = { id };
+
+    // CRITICAL: Add tenant filter
+    where = this.prisma.addTenantFilter(where);
 
     if (currentUser.role === UserRole.AGENT) {
       where.assignedUserId = currentUser.id;
@@ -199,7 +218,11 @@ export class LeadsService {
       updateData.lastContactedAt = new Date();
     }
 
-    return this.prisma.lead.update({
+    // Check if lead is being assigned to a different user
+    const isReassigned = updateLeadDto.assignedUserId &&
+      updateLeadDto.assignedUserId !== existingLead.assignedUserId;
+
+    const updatedLead = await this.prisma.lead.update({
       where: { id },
       data: updateData,
       include: {
@@ -213,6 +236,23 @@ export class LeadsService {
         },
       },
     });
+
+    // Create notification if lead was assigned to someone
+    if (isReassigned && updatedLead.assignedUserId) {
+      await this.notificationsService.create({
+        userId: updatedLead.assignedUserId,
+        type: 'LEAD_ASSIGNED',
+        title: 'New Lead Assigned',
+        message: `You have been assigned a new lead: ${updatedLead.firstName} ${updatedLead.lastName}`,
+      // @ts-ignore - tenantId added by Prisma middleware
+        metadata: {
+          leadId: updatedLead.id,
+          leadName: `${updatedLead.firstName} ${updatedLead.lastName}`,
+        },
+      });
+    }
+
+    return updatedLead;
   }
 
   async remove(id: string, currentUser: any) {
@@ -285,6 +325,7 @@ export class LeadsService {
     }
 
     return this.prisma.client.create({
+      // @ts-ignore - tenantId added by Prisma middleware
       data: {
         leadId: id,
         firstName: lead.firstName,
@@ -443,6 +484,7 @@ export class LeadsService {
     // Log the stage transition
     if (notes) {
       await this.prisma.communication.create({
+      // @ts-ignore - tenantId added by Prisma middleware
         data: {
           leadId,
           channel: 'IN_APP',
@@ -542,6 +584,7 @@ export class LeadsService {
       dueDate.setDate(dueDate.getDate() + template.daysFromNow);
 
       await this.prisma.task.create({
+      // @ts-ignore - tenantId added by Prisma middleware
         data: {
           title: template.title,
           type: template.type,

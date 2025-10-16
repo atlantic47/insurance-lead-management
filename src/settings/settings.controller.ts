@@ -4,6 +4,7 @@ import {
   Post,
   Body,
   UseGuards,
+  UseInterceptors,
   Param,
 } from '@nestjs/common';
 import {
@@ -15,11 +16,13 @@ import { SettingsService } from './settings.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
+import { TenantContextInterceptor } from '../common/interceptors/tenant-context.interceptor';
 import { UserRole } from '@prisma/client';
 
 @ApiTags('Settings')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
+@UseInterceptors(TenantContextInterceptor)
 @Roles(UserRole.ADMIN)
 @Controller('settings')
 export class SettingsController {

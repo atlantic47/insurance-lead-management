@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../common/services/prisma.service';
+import { getTenantContext } from '../common/context/tenant-context';
 import { WhatsAppService, WhatsAppMessage, WhatsAppContact } from './whatsapp.service';
 import { OpenAIService } from '../ai/openai.service';
 import { AIService } from '../ai/ai.service';
@@ -42,19 +43,26 @@ export class WhatsAppConversationService {
 
   async processIncomingMessage(
     message: WhatsAppMessage,
-    contact: WhatsAppContact
+    contact: WhatsAppContact,
+    tenantId?: string
   ): Promise<void> {
     try {
       this.logger.log(`Processing incoming WhatsApp message from ${message.from}`);
 
       // Mark message as read
-      await this.whatsappService.markMessageAsRead(message.id);
+      const messageTenantId = tenantId || getTenantContext()?.tenantId;
+      if (messageTenantId) {
+        await this.whatsappService.markMessageAsRead(message.id, messageTenantId);
+      }
 
       // Find or create conversation
       let conversation = await this.findConversationByPhoneNumber(message.from);
       if (!conversation) {
         conversation = await this.createConversation(message.from, contact.profile?.name);
       }
+
+      // Store tenant ID in conversation for later use
+      (conversation as any).tenantId = tenantId || getTenantContext()?.tenantId;
 
       // Save incoming message
       await this.saveMessage({
@@ -92,7 +100,8 @@ export class WhatsAppConversationService {
       
       // Send typing indicator
       try {
-        await this.whatsappService.sendTypingIndicator(message.from);
+        const tenantId = (conversation as any).tenantId;
+        await this.whatsappService.sendTypingIndicator(message.from, tenantId);
         this.logger.log('✅ Typing indicator sent');
       } catch (typingError) {
         this.logger.warn('⚠️ Typing indicator failed:', typingError.message);
@@ -131,9 +140,11 @@ export class WhatsAppConversationService {
 
       // Send AI response
       this.logger.log(`📤 Attempting to send AI response to ${message.from}`);
+      const tenantId = (conversation as any).tenantId;
       const success = await this.whatsappService.sendMessage(
         message.from,
-        aiResponse.message
+        aiResponse.message,
+        tenantId
       );
 
       if (success) {
@@ -176,9 +187,11 @@ export class WhatsAppConversationService {
       await this.updateConversationStatus(conversation.id, 'escalated');
 
       // Send escalation message
+      const tenantId = (conversation as any).tenantId;
       await this.whatsappService.sendMessage(
         conversation.phoneNumber,
-        escalationMessage + '\n\nA human agent will respond to you shortly during business hours (Monday-Friday 9AM-6PM).'
+        escalationMessage + '\n\nA human agent will respond to you shortly during business hours (Monday-Friday 9AM-6PM).',
+        tenantId
       );
 
       // Save escalation message
@@ -208,8 +221,9 @@ export class WhatsAppConversationService {
   ): Promise<void> {
     // For escalated conversations, just save the message and send an acknowledgment
     const acknowledgment = 'Thank you for your message. Your conversation has been escalated to our team. An agent will respond during business hours.';
-    
-    await this.whatsappService.sendMessage(conversation.phoneNumber, acknowledgment);
+    const tenantId = (conversation as any).tenantId;
+
+    await this.whatsappService.sendMessage(conversation.phoneNumber, acknowledgment, tenantId);
     
     await this.saveMessage({
       conversationId: conversation.id,
@@ -225,10 +239,11 @@ export class WhatsAppConversationService {
   private async findConversationByPhoneNumber(phoneNumber: string): Promise<WhatsAppConversation | null> {
     try {
       // Find all WhatsApp conversations and filter by phone number
+      let where: any = { type: 'WHATSAPP_CHAT' };
+      where = this.prisma.addTenantFilter(where);
+
       const conversations = await this.prisma.aIConversation.findMany({
-        where: {
-          type: 'WHATSAPP_CHAT'
-        },
+        where,
         orderBy: { createdAt: 'desc' },
         include: {
           chatMessages: {
@@ -290,6 +305,7 @@ export class WhatsAppConversationService {
 
       // Create conversation in database
       const conversation = await this.prisma.aIConversation.create({
+      // @ts-ignore - tenantId added by Prisma middleware
         data: {
           type: 'WHATSAPP_CHAT',
           input: 'New WhatsApp conversation started',
@@ -325,18 +341,27 @@ export class WhatsAppConversationService {
 
   private async saveMessage(messageData: Omit<WhatsAppConversationMessage, 'id'>): Promise<void> {
     try {
+      // CRITICAL: Get tenant context for security
+      const context = getTenantContext();
+      const tenantId = context?.tenantId;
+
+      if (!tenantId) {
+        throw new Error('Tenant context required to save WhatsApp message');
+      }
+
       // Save message to database using ChatMessage model
       await this.prisma.chatMessage.create({
         data: {
           content: messageData.content,
-          sender: messageData.isFromAI 
-            ? 'AI_ASSISTANT' 
-            : messageData.direction === 'inbound' 
-              ? 'CUSTOMER' 
+          sender: messageData.isFromAI
+            ? 'AI_ASSISTANT'
+            : messageData.direction === 'inbound'
+              ? 'CUSTOMER'
               : 'HUMAN_AGENT',
           platform: 'WHATSAPP',
           platformMessageId: messageData.messageId,
           conversationId: messageData.conversationId,
+          tenantId, // CRITICAL: Add tenant isolation
           metadata: {
             direction: messageData.direction,
             messageType: messageData.messageType,
@@ -356,8 +381,11 @@ export class WhatsAppConversationService {
   private async updateConversationStatus(conversationId: string, status: 'active' | 'escalated' | 'closed'): Promise<void> {
     try {
       // Update conversation status in database - Get current metadata and update it
-      const conversation = await this.prisma.aIConversation.findUnique({
-        where: { id: conversationId }
+      let where: any = { id: conversationId };
+      where = this.prisma.addTenantFilter(where);
+
+      const conversation = await this.prisma.aIConversation.findFirst({
+        where
       });
       
       if (conversation) {
@@ -384,8 +412,11 @@ export class WhatsAppConversationService {
   private async getConversationHistory(conversationId: string, limit: number): Promise<WhatsAppConversationMessage[]> {
     try {
       // Get conversation history from database
+      let where: any = { conversationId };
+      where = this.prisma.addTenantFilter(where);
+
       const messages = await this.prisma.chatMessage.findMany({
-        where: { conversationId },
+        where,
         orderBy: { createdAt: 'desc' },
         take: limit
       });
@@ -438,8 +469,18 @@ export class WhatsAppConversationService {
         inquiryDetails: `Auto-created from WhatsApp conversation`,
       };
 
+      const context = getTenantContext();
+      const tenantId = context?.tenantId;
+
+      if (!tenantId) {
+        throw new Error('SECURITY: Cannot create lead without tenant context');
+      }
+
       const newLead = await this.prisma.lead.create({
-        data: leadData
+        data: {
+          ...leadData,
+          tenant: { connect: { id: tenantId } },
+        },
       });
 
       this.logger.log(`Created new lead ${newLead.id} for WhatsApp phone: ${phoneNumber}`);
@@ -469,8 +510,9 @@ export class WhatsAppConversationService {
         return false;
       }
 
+      const tenantId = (conversation as any).tenantId;
       // Send message via WhatsApp API
-      const success = await this.whatsappService.sendMessage(conversation.phoneNumber, message);
+      const success = await this.whatsappService.sendMessage(conversation.phoneNumber, message, tenantId);
 
       if (success) {
         // Save agent message
@@ -500,8 +542,11 @@ export class WhatsAppConversationService {
   async findConversationById(conversationId: string): Promise<WhatsAppConversation | null> {
     try {
       // Find conversation by ID in database
-      const conversation = await this.prisma.aIConversation.findUnique({
-        where: { id: conversationId },
+      let where: any = { id: conversationId };
+      where = this.prisma.addTenantFilter(where);
+
+      const conversation = await this.prisma.aIConversation.findFirst({
+        where,
         include: {
           chatMessages: {
             orderBy: { createdAt: 'asc' }
@@ -550,12 +595,18 @@ export class WhatsAppConversationService {
   async getConversations(): Promise<{ conversations: any[] }> {
     try {
       // Get all WhatsApp conversations from database
+      let where: any = { type: 'WHATSAPP_CHAT' };
+      where = this.prisma.addTenantFilter(where);
+
+      // CRITICAL: Get tenant context to filter chat messages
+      const context = getTenantContext();
+      const tenantId = context?.tenantId;
+
       const conversations = await this.prisma.aIConversation.findMany({
-        where: {
-          type: 'WHATSAPP_CHAT'
-        },
+        where,
         include: {
           chatMessages: {
+            where: tenantId ? { tenantId } : {}, // SECURITY FIX: Filter messages by tenant
             orderBy: { createdAt: 'asc' }
           }
         },
@@ -602,8 +653,11 @@ export class WhatsAppConversationService {
   async linkConversationToLead(conversationId: string, leadId: string): Promise<void> {
     try {
       // Get current conversation metadata
-      const conversation = await this.prisma.aIConversation.findUnique({
-        where: { id: conversationId }
+      let where: any = { id: conversationId };
+      where = this.prisma.addTenantFilter(where);
+
+      const conversation = await this.prisma.aIConversation.findFirst({
+        where
       });
       
       if (conversation) {
@@ -614,6 +668,7 @@ export class WhatsAppConversationService {
         
         await this.prisma.aIConversation.update({
           where: { id: conversationId },
+      // @ts-ignore - tenantId added by Prisma middleware
           data: {
             metadata: updatedMetadata
           }

@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../common/services/prisma.service';
+import { getTenantContext } from '../common/context/tenant-context';
 import { CreateCampaignTemplateDto } from './dto/create-campaign-template.dto';
 import { UpdateCampaignTemplateDto } from './dto/update-campaign-template.dto';
 import { CreateCampaignDto } from './dto/create-campaign.dto';
@@ -11,27 +12,41 @@ export class CampaignsService {
 
   // Campaign Templates
   async createTemplate(dto: CreateCampaignTemplateDto, userId: string) {
+    const context = getTenantContext();
+    const tenantId = context?.tenantId || 'default-tenant-000';
+
     return this.prisma.campaignTemplate.create({
       data: {
         ...dto,
-        createdById: userId,
+        createdBy: { connect: { id: userId } },
+        tenant: { connect: { id: tenantId } },
       },
     });
   }
 
   async findAllTemplates(userId: string, type?: string) {
+    let where: any = {
+      createdById: userId,
+      ...(type && { type: type as any }),
+    };
+
+    // Add tenant filter
+    where = this.prisma.addTenantFilter(where);
+
     return this.prisma.campaignTemplate.findMany({
-      where: {
-        createdById: userId,
-        ...(type && { type: type as any }),
-      },
+      where,
       orderBy: { createdAt: 'desc' },
     });
   }
 
   async findOneTemplate(id: string, userId: string) {
+    let where: any = { id, createdById: userId };
+
+    // Add tenant filter
+    where = this.prisma.addTenantFilter(where);
+
     const template = await this.prisma.campaignTemplate.findFirst({
-      where: { id, createdById: userId },
+      where,
     });
 
     if (!template) {
@@ -62,9 +77,12 @@ export class CampaignsService {
 
   // Campaigns
   async create(dto: CreateCampaignDto, userId: string) {
-    // Get contact group to count recipients
-    const contactGroup = await this.prisma.contactGroup.findUnique({
-      where: { id: dto.contactGroupId },
+    // Get contact group to count recipients - with tenant validation
+    let where: any = { id: dto.contactGroupId };
+    where = this.prisma.addTenantFilter(where);
+
+    const contactGroup = await this.prisma.contactGroup.findFirst({
+      where,
       include: { _count: { select: { leads: true } } },
     });
 
@@ -85,12 +103,22 @@ export class CampaignsService {
       ? new Date(dto.scheduledAt).toISOString()
       : undefined;
 
+    const context = getTenantContext();
+    const tenantId = context?.tenantId || 'default-tenant-000';
+
     return this.prisma.campaign.create({
       data: {
-        ...dto,
+        name: dto.name,
+        description: dto.description,
+        type: dto.type,
+        template: dto.templateId ? { connect: { id: dto.templateId } } : undefined,
+        subject: dto.subject,
+        content: dto.content,
         scheduledAt,
         totalRecipients: contactGroup._count.leads,
-        createdById: userId,
+        contactGroup: { connect: { id: dto.contactGroupId } },
+        createdBy: { connect: { id: userId } },
+        tenant: { connect: { id: tenantId } },
       },
       include: {
         template: true,
@@ -104,12 +132,17 @@ export class CampaignsService {
   }
 
   async findAll(userId: string, type?: string, status?: string) {
+    let where: any = {
+      createdById: userId,
+      ...(type && { type: type as any }),
+      ...(status && { status: status as any }),
+    };
+
+    // Add tenant filter
+    where = this.prisma.addTenantFilter(where);
+
     return this.prisma.campaign.findMany({
-      where: {
-        createdById: userId,
-        ...(type && { type: type as any }),
-        ...(status && { status: status as any }),
-      },
+      where,
       include: {
         template: true,
         contactGroup: {
@@ -123,8 +156,13 @@ export class CampaignsService {
   }
 
   async findOne(id: string, userId: string) {
+    let where: any = { id, createdById: userId };
+
+    // Add tenant filter
+    where = this.prisma.addTenantFilter(where);
+
     const campaign = await this.prisma.campaign.findFirst({
-      where: { id, createdById: userId },
+      where,
       include: {
         template: true,
         contactGroup: {
@@ -293,31 +331,34 @@ export class CampaignsService {
   }
 
   async getStats(userId: string) {
+    let baseWhere: any = { createdById: userId };
+    baseWhere = this.prisma.addTenantFilter(baseWhere);
+
     const totalCampaigns = await this.prisma.campaign.count({
-      where: { createdById: userId },
+      where: baseWhere,
     });
 
     const activeCampaigns = await this.prisma.campaign.count({
       where: {
-        createdById: userId,
+        ...baseWhere,
         status: { in: ['SENDING', 'SCHEDULED'] },
       },
     });
 
     const completedCampaigns = await this.prisma.campaign.count({
       where: {
-        createdById: userId,
+        ...baseWhere,
         status: 'COMPLETED',
       },
     });
 
     const totalSent = await this.prisma.campaign.aggregate({
-      where: { createdById: userId },
+      where: baseWhere,
       _sum: { sentCount: true },
     });
 
     const totalFailed = await this.prisma.campaign.aggregate({
-      where: { createdById: userId },
+      where: baseWhere,
       _sum: { failedCount: true },
     });
 

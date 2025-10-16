@@ -1,8 +1,8 @@
-import { Module } from '@nestjs/common';
+import { Module, NestModule, MiddlewareConsumer, RequestMethod } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { ServeStaticModule } from '@nestjs/serve-static';
 import { ScheduleModule } from '@nestjs/schedule';
-import { APP_GUARD, APP_FILTER } from '@nestjs/core';
+import { APP_GUARD, APP_FILTER, APP_INTERCEPTOR } from '@nestjs/core';
 import { join } from 'path';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -21,12 +21,19 @@ import { WhatsAppModule } from './whatsapp/whatsapp.module';
 import { ContactGroupsModule } from './contact-groups/contact-groups.module';
 import { CampaignsModule } from './campaigns/campaigns.module';
 import { SettingsModule } from './settings/settings.module';
+import { NotificationsModule } from './notifications/notifications.module';
+import { TenantsModule } from './tenants/tenants.module';
+import { PaymentsModule } from './payments/payments.module';
 import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
 import { RolesGuard } from './auth/guards/roles.guard';
+import { TenantGuard } from './auth/guards/tenant.guard';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
+import { TenantContextInterceptor } from './common/interceptors/tenant-context.interceptor';
 import { PrismaService } from './common/services/prisma.service';
 import { AIService } from './ai/ai.service';
 import { OpenAIService } from './ai/openai.service';
+import { TenantMiddleware } from './common/middleware/tenant.middleware';
+import { WebhookTenantMiddleware } from './common/middleware/webhook-tenant.middleware';
 
 @Module({
   imports: [
@@ -61,6 +68,9 @@ import { OpenAIService } from './ai/openai.service';
     ContactGroupsModule,
     CampaignsModule,
     SettingsModule,
+    NotificationsModule,
+    TenantsModule,
+    PaymentsModule,
   ],
   controllers: [AppController],
   providers: [
@@ -74,12 +84,37 @@ import { OpenAIService } from './ai/openai.service';
     },
     {
       provide: APP_GUARD,
+      useClass: TenantGuard,
+    },
+    {
+      provide: APP_GUARD,
       useClass: RolesGuard,
     },
     {
       provide: APP_FILTER,
       useClass: HttpExceptionFilter,
     },
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: TenantContextInterceptor,
+    },
   ],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer) {
+    // SECURITY FIX: Apply webhook tenant middleware to public webhook endpoints FIRST
+    // This extracts and validates tenant context from URL parameters for webhooks
+    consumer
+      .apply(WebhookTenantMiddleware)
+      .forRoutes(
+        { path: 'whatsapp/webhook/:tenantId', method: RequestMethod.ALL },
+        { path: 'email/webhook/:tenantId', method: RequestMethod.ALL }
+      );
+
+    // Apply regular tenant middleware to all other routes
+    // This extracts tenant context from authenticated user (JWT)
+    consumer
+      .apply(TenantMiddleware)
+      .forRoutes('*');
+  }
+}

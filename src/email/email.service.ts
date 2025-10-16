@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../common/services/prisma.service';
 import { SmtpEmailService } from './smtp-email.service';
 import { LeadSource, LeadStatus, InsuranceType } from '@prisma/client';
+import { getTenantContext } from '../common/context/tenant-context';
 
 @Injectable()
 export class EmailService {
@@ -11,14 +12,23 @@ export class EmailService {
   ) {}
 
   async createOrGetLeadByEmail(email: string, name?: string) {
-    // Check if lead exists by email
+    // CRITICAL: Get tenant context for security
+    const context = getTenantContext();
+    const tenantId = context?.tenantId;
+
+    if (!tenantId) {
+      throw new Error('Tenant context required to create or get lead by email');
+    }
+
+    // Check if lead exists by email in this tenant
     let lead = await this.prisma.lead.findFirst({
-      where: { email },
+      where: this.prisma.addTenantFilter({ email }),
     });
 
     if (!lead) {
       // Create new lead from email
       const nameParts = name ? name.split(' ') : email.split('@')[0].split('.');
+
       lead = await this.prisma.lead.create({
         data: {
           firstName: nameParts[0] || 'Unknown',
@@ -27,6 +37,7 @@ export class EmailService {
           source: LeadSource.EMAIL,
           status: LeadStatus.NEW,
           insuranceType: InsuranceType.OTHER,
+          tenant: { connect: { id: tenantId } },
         },
       });
     }
@@ -59,11 +70,20 @@ export class EmailService {
       }
     }
 
+    // CRITICAL: Get tenant context for security
+    const context = getTenantContext();
+    const tenantId = context?.tenantId;
+
+    if (!tenantId) {
+      throw new Error('Tenant context required to create email message');
+    }
+
     return this.prisma.emailMessage.create({
       data: {
         ...data,
         ccEmails: data.ccEmails ? JSON.stringify(data.ccEmails) : undefined,
         bccEmails: data.bccEmails ? JSON.stringify(data.bccEmails) : undefined,
+        tenantId, // CRITICAL: Add tenant isolation
       },
     });
   }
@@ -82,8 +102,11 @@ export class EmailService {
     toDate?: Date;
   }) {
     const skip = (page - 1) * limit;
-    
-    const where: any = {};
+
+    let where: any = {};
+    // CRITICAL: Add tenant filter for security
+    where = this.prisma.addTenantFilter(where);
+
     if (filters?.direction) where.direction = filters.direction;
     if (filters?.isRead !== undefined) where.isRead = filters.isRead;
     if (filters?.fromDate || filters?.toDate) {
@@ -123,8 +146,12 @@ export class EmailService {
   }
 
   async getEmailThread(threadId: string) {
+    let where: any = { threadId };
+    // CRITICAL: Add tenant filter for security
+    where = this.prisma.addTenantFilter(where);
+
     return this.prisma.emailMessage.findMany({
-      where: { threadId },
+      where,
       include: {
         lead: {
           select: {
@@ -148,8 +175,11 @@ export class EmailService {
     toDate?: Date;
   }) {
     const skip = (page - 1) * limit;
-    
-    const where: any = {};
+
+    let where: any = {};
+    // CRITICAL: Add tenant filter for security
+    where = this.prisma.addTenantFilter(where);
+
     if (filters?.leadId) where.leadId = filters.leadId;
     if (filters?.isRead !== undefined) where.isRead = filters.isRead;
     if (filters?.fromDate || filters?.toDate) {
@@ -343,7 +373,7 @@ export class EmailService {
   }) {
     // Extract sender name from email
     const senderName = this.extractNameFromEmail(data.from);
-    
+
     // Create or get lead
     const lead = await this.createOrGetLeadByEmail(data.from, senderName);
 
@@ -424,17 +454,22 @@ export class EmailService {
   }
 
   async getEmailStats() {
+    // CRITICAL: Add tenant filter for security
+    let baseWhere: any = {};
+    baseWhere = this.prisma.addTenantFilter(baseWhere);
+
     const [totalEmails, unreadEmails, todayEmails, inboundEmails] = await Promise.all([
-      this.prisma.emailMessage.count(),
-      this.prisma.emailMessage.count({ where: { isRead: false } }),
+      this.prisma.emailMessage.count({ where: baseWhere }),
+      this.prisma.emailMessage.count({ where: { ...baseWhere, isRead: false } }),
       this.prisma.emailMessage.count({
         where: {
+          ...baseWhere,
           createdAt: {
             gte: new Date(new Date().setHours(0, 0, 0, 0)),
           },
         },
       }),
-      this.prisma.emailMessage.count({ where: { direction: 'INBOUND' } }),
+      this.prisma.emailMessage.count({ where: { ...baseWhere, direction: 'INBOUND' } }),
     ]);
 
     return {
@@ -447,8 +482,10 @@ export class EmailService {
   }
 
   async getEmailContacts(search?: string) {
-    const whereClause: any = {};
-    
+    let whereClause: any = {};
+    // CRITICAL: Add tenant filter for security
+    whereClause = this.prisma.addTenantFilter(whereClause);
+
     if (search) {
       whereClause.OR = [
         { fromEmail: { contains: search, mode: 'insensitive' } },

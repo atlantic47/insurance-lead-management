@@ -105,4 +105,32 @@ export class ReportsController {
     res.setHeader('Content-Disposition', `attachment; filename="${report.filename}"`);
     res.send(report.content);
   }
+
+  @Get('leads')
+  @ApiOperation({ summary: 'Get lead metrics report' })
+  @ApiQuery({ name: 'startDate', required: false, type: Date })
+  @ApiQuery({ name: 'endDate', required: false, type: Date })
+  getLeadMetrics(
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+  ) {
+    return this.reportsService.getLeadMetrics(
+      startDate ? new Date(startDate) : undefined,
+      endDate ? new Date(endDate) : undefined,
+    );
+  }
+
+  @Get('performance')
+  @ApiOperation({ summary: 'Get performance metrics report' })
+  @ApiQuery({ name: 'startDate', required: false, type: Date })
+  @ApiQuery({ name: 'endDate', required: false, type: Date })
+  getPerformanceMetrics(
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+  ) {
+    return this.reportsService.getPerformanceMetrics(
+      startDate ? new Date(startDate) : undefined,
+      endDate ? new Date(endDate) : undefined,
+    );
+  }
 }

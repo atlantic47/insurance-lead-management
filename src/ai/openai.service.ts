@@ -9,6 +9,7 @@ export interface AIResponse {
   shouldEscalate: boolean;
   confidence: number;
   intent?: string;
+  errorCode?: string;
 }
 
 @Injectable()
@@ -116,23 +117,60 @@ export class OpenAIService {
     } catch (error) {
       this.logger.error('❌ Error generating AI response:', error);
       this.logger.error('Error details:', error.message);
-      this.logger.error('Error name:', error.name);
-      this.logger.error('Error stack:', error.stack);
-      if (error.response) {
-        this.logger.error('API response error:', JSON.stringify(error.response.data));
-      }
-      if (error.code) {
-        this.logger.error('Error code:', error.code);
-      }
-      if (error.status) {
-        this.logger.error('HTTP status:', error.status);
+
+      // Handle specific OpenAI errors
+      if (error.code === 'insufficient_quota') {
+        this.logger.error('OpenAI quota exceeded');
+        return {
+          message: "We're experiencing high demand right now. I'm connecting you with a human agent who can assist you immediately.",
+          response: "We're experiencing high demand right now. I'm connecting you with a human agent who can assist you immediately.",
+          shouldEscalate: true,
+          confidence: 0,
+          errorCode: 'API_QUOTA_EXCEEDED'
+        };
       }
 
+      if (error.code === 'invalid_api_key') {
+        this.logger.error('Invalid OpenAI API key');
+        return {
+          message: 'I need to connect you with one of our team members who can help you better. Please hold on.',
+          response: 'I need to connect you with one of our team members who can help you better. Please hold on.',
+          shouldEscalate: true,
+          confidence: 0,
+          errorCode: 'INVALID_API_KEY'
+        };
+      }
+
+      if (error.status === 429) {
+        this.logger.error('OpenAI rate limit hit');
+        return {
+          message: "I'm processing a lot of requests right now. Let me connect you with an agent for faster service.",
+          response: "I'm processing a lot of requests right now. Let me connect you with an agent for faster service.",
+          shouldEscalate: true,
+          confidence: 0,
+          errorCode: 'RATE_LIMIT'
+        };
+      }
+
+      if (error.status === 503 || error.message?.includes('ECONNREFUSED')) {
+        this.logger.error('OpenAI service unavailable');
+        return {
+          message: "I'm having trouble connecting to my systems. Let me get a human agent to assist you right away.",
+          response: "I'm having trouble connecting to my systems. Let me get a human agent to assist you right away.",
+          shouldEscalate: true,
+          confidence: 0,
+          errorCode: 'SERVICE_UNAVAILABLE'
+        };
+      }
+
+      // Generic error
+      this.logger.error('Unknown error:', error.stack);
       return {
-        message: 'I apologize, but I encountered an error while processing your message. Please try again or contact our support team.',
-        response: 'I apologize, but I encountered an error while processing your message. Please try again or contact our support team.',
+        message: "I'm having a bit of trouble right now. Let me connect you with someone who can help you better.",
+        response: "I'm having a bit of trouble right now. Let me connect you with someone who can help you better.",
         shouldEscalate: true,
-        confidence: 0
+        confidence: 0,
+        errorCode: 'UNKNOWN_ERROR'
       };
     }
   }

@@ -75,6 +75,44 @@ enum TaskType {
   OTHER
 }
 
+// Multi-Tenancy Support
+model Tenant {
+  id             String    @id @default(uuid())
+  name           String    // Agency/Organization name
+  subdomain      String    @unique // e.g., "acme" for acme.insurancecrm.com
+  domain         String?   @unique // Custom domain support
+  plan           String    @default("free") // free, basic, pro, enterprise
+  status         String    @default("active") // trial, active, suspended, cancelled
+  maxUsers       Int       @default(10)
+  maxLeads       Int       @default(10000)
+  settings       Json?     // Tenant-specific settings
+
+  // Billing
+  subscriptionId String?   // Flutterwave subscription ID
+  trialEndsAt    DateTime? // Trial expiration date
+
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  // Relations
+  users              User[]
+  leads              Lead[]
+  clients            Client[]
+  tasks              Task[]
+  products           Product[]
+  campaigns          Campaign[]
+  communications     Communication[]
+  contactGroups      ContactGroup[]
+  campaignTemplates  CampaignTemplate[]
+  aiConversations    AIConversation[]
+  tickets            Ticket[]
+  chatMessages       ChatMessage[]
+  emailMessages      EmailMessage[]
+  aiTrainingData     AITrainingData[]
+
+  @@map("tenants")
+}
+
 // Core Models
 model User {
   id          String   @id @default(uuid())
@@ -89,6 +127,11 @@ model User {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
+  // Multi-tenancy
+  tenantId      String?
+  tenant        Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  isSuperAdmin  Boolean  @default(false) // System-wide admin
+
   // Relations
   assignedLeads     Lead[]
   communications    Communication[]
@@ -98,7 +141,11 @@ model User {
   contactGroups     ContactGroup[]     @relation("ContactGroupCreator")
   campaigns         Campaign[]         @relation("CampaignCreator")
   campaignTemplates CampaignTemplate[] @relation("TemplateCreator")
+  notifications     Notification[]
+  assignedTickets   Ticket[]           @relation("AssignedTickets")
+  createdTickets    Ticket[]           @relation("CreatedTickets")
 
+  @@index([tenantId])
   @@map("users")
 }
 
@@ -150,12 +197,16 @@ model Lead {
   // Assignment and Tracking
   assignedUserId        String?
   assignedUser          User?         @relation(fields: [assignedUserId], references: [id])
-  
+
+  // Multi-tenancy
+  tenantId              String
+  tenant                Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
   // Timestamps
   createdAt             DateTime      @default(now())
   updatedAt             DateTime      @updatedAt
   lastContactedAt       DateTime?
-  
+
   // Relations
   communications        Communication[]
   tasks                 Task[]
@@ -165,7 +216,11 @@ model Lead {
   chatMessages          ChatMessage[]
   emailMessages         EmailMessage[]
   contactGroups         LeadContactGroup[]
+  tickets               Ticket[]
 
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@index([tenantId, assignedUserId])
   @@map("leads")
 }
 
@@ -184,10 +239,15 @@ model Communication {
   lead        Lead                 @relation(fields: [leadId], references: [id], onDelete: Cascade)
   userId      String?
   user        User?                @relation(fields: [userId], references: [id])
-  
+
+  // Multi-tenancy
+  tenantId    String
+  tenant      Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
   createdAt   DateTime             @default(now())
   updatedAt   DateTime             @updatedAt
 
+  @@index([tenantId])
   @@map("communications")
 }
 
@@ -202,10 +262,15 @@ model Product {
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
+  // Multi-tenancy
+  tenantId        String
+  tenant          Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
   // Relations
   clients         Client[]
   leadProducts    LeadProduct[]
 
+  @@index([tenantId])
   @@map("products")
 }
 
@@ -253,10 +318,15 @@ model Client {
   
   // Status
   isActive        Boolean   @default(true)
-  
+
+  // Multi-tenancy
+  tenantId        String
+  tenant          Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
+  @@index([tenantId])
   @@map("clients")
 }
 
@@ -275,10 +345,16 @@ model Task {
   lead        Lead?      @relation(fields: [leadId], references: [id], onDelete: Cascade)
   assignedUserId String
   assignedUser   User    @relation(fields: [assignedUserId], references: [id])
-  
+
+  // Multi-tenancy
+  tenantId    String
+  tenant      Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
 
+  @@index([tenantId])
+  @@index([tenantId, assignedUserId])
   @@map("tasks")
 }
 
@@ -298,9 +374,14 @@ model AIConversation {
   userId        String?
   user          User?    @relation(fields: [userId], references: [id])
   chatMessages  ChatMessage[]
-  
+
+  // Multi-tenancy
+  tenantId      String
+  tenant        Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
   createdAt     DateTime @default(now())
 
+  @@index([tenantId])
   @@map("ai_conversations")
 }
 
@@ -313,16 +394,21 @@ model ChatMessage {
   metadata          Json?    // Platform-specific data (phone numbers, email addresses, etc.)
   isRead            Boolean  @default(false)
   readAt            DateTime?
-  
+
   // Relations
   conversationId    String?
   conversation      AIConversation? @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   leadId            String?
   lead              Lead?           @relation(fields: [leadId], references: [id], onDelete: Cascade)
-  
+
+  // Multi-tenancy - CRITICAL FOR SECURITY
+  tenantId          String
+  tenant            Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
+  @@index([tenantId])
   @@map("chat_messages")
 }
 
@@ -340,14 +426,19 @@ model EmailMessage {
   isRead      Boolean  @default(false)
   readAt      DateTime?
   direction   String   // INBOUND, OUTBOUND
-  
+
   // Relations
   leadId      String?
   lead        Lead?    @relation(fields: [leadId], references: [id], onDelete: Cascade)
-  
+
+  // Multi-tenancy - CRITICAL FOR SECURITY
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
+  @@index([tenantId])
   @@map("email_messages")
 }
 
@@ -361,10 +452,15 @@ model AITrainingData {
   error        String?   @db.Text
   metadata     Json?     // Additional data (file info, URL info, etc.)
   processedAt  DateTime?
-  
+
+  // Multi-tenancy - CRITICAL FOR SECURITY
+  tenantId     String
+  tenant       Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
+  @@index([tenantId])
   @@map("ai_training_data")
 }
 
@@ -421,9 +517,14 @@ model ContactGroup {
   createdById String
   createdBy   User             @relation("ContactGroupCreator", fields: [createdById], references: [id])
 
+  // Multi-tenancy
+  tenantId    String
+  tenant      Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
   createdAt   DateTime         @default(now())
   updatedAt   DateTime         @updatedAt
 
+  @@index([tenantId])
   @@map("contact_groups")
 }
 
@@ -465,9 +566,14 @@ model CampaignTemplate {
   createdBy   User         @relation("TemplateCreator", fields: [createdById], references: [id])
   campaigns   Campaign[]
 
+  // Multi-tenancy
+  tenantId    String
+  tenant      Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
 
+  @@index([tenantId])
   @@map("campaign_templates")
 }
 
@@ -507,24 +613,82 @@ model Campaign {
   createdById       String
   createdBy         User           @relation("CampaignCreator", fields: [createdById], references: [id])
 
+  // Multi-tenancy
+  tenantId          String
+  tenant            Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
   createdAt         DateTime       @default(now())
   updatedAt         DateTime       @updatedAt
 
+  @@index([tenantId])
   @@map("campaigns")
 }
 
-// System Settings Model
-model SystemSettings {
+// System Settings Model - REMOVED
+// All settings now stored per-tenant in tenant.settings.credentials
+// This ensures complete tenant isolation with no shared/global settings
+
+// Notifications Model
+model Notification {
   id        String   @id @default(uuid())
-  category  String   // SMTP, WHATSAPP, OPENAI, FACEBOOK, EMAIL, GENERAL
-  key       String   // Specific setting key
-  value     String   @db.Text // Setting value (encrypted for sensitive data)
-  isEncrypted Boolean @default(false) // Whether the value is encrypted
-  description String? @db.Text // Description of the setting
-
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String   // LEAD_ASSIGNED, TASK_DUE, AI_ESCALATION, NEW_LEAD, TASK_COMPLETED
+  title     String
+  message   String   @db.Text
+  isRead    Boolean  @default(false)
+  metadata  Json?    // Additional data (leadId, taskId, etc.)
   createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
 
-  @@unique([category, key])
-  @@map("system_settings")
+  @@index([userId, isRead])
+  @@map("notifications")
+}
+
+enum TicketStatus {
+  NEW
+  IN_PROGRESS
+  PENDING
+  CLOSED
+}
+
+enum TicketPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+model Ticket {
+  id              String         @id @default(uuid())
+  title           String
+  description     String         @db.Text
+  status          TicketStatus   @default(NEW)
+  priority        TicketPriority @default(MEDIUM)
+
+  // Relations
+  leadId          String?
+  lead            Lead?          @relation(fields: [leadId], references: [id], onDelete: SetNull)
+
+  assignedUserId  String?
+  assignedUser    User?          @relation("AssignedTickets", fields: [assignedUserId], references: [id])
+
+  createdById     String
+  createdBy       User           @relation("CreatedTickets", fields: [createdById], references: [id])
+
+  // Multi-tenancy
+  tenantId        String
+  tenant          Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  // Metadata
+  tags            Json?          // Array of tags
+  dueDate         DateTime?
+  resolvedAt      DateTime?
+
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  @@index([tenantId])
+  @@index([status])
+  @@index([assignedUserId])
+  @@map("tickets")
 }

@@ -14,6 +14,7 @@ export class TasksService {
     }
 
     return this.prisma.task.create({
+      // @ts-ignore - tenantId added by Prisma middleware
       data: {
         ...createTaskDto,
         dueDate: createTaskDto.dueDate ? new Date(createTaskDto.dueDate) : undefined,
@@ -42,6 +43,9 @@ export class TasksService {
     const skip = (page - 1) * limit;
 
     let where: any = {};
+
+    // Add tenant filter first
+    where = this.prisma.addTenantFilter(where);
 
     if (currentUser.role === UserRole.AGENT) {
       where.assignedUserId = currentUser.id;
@@ -94,7 +98,10 @@ export class TasksService {
   }
 
   async findOne(id: string, currentUser: any) {
-    const where: any = { id };
+    let where: any = { id };
+
+    // Add tenant filter first
+    where = this.prisma.addTenantFilter(where);
 
     if (currentUser.role === UserRole.AGENT) {
       where.assignedUserId = currentUser.id;
@@ -154,9 +161,12 @@ export class TasksService {
   }
 
   async getTaskStats(currentUser: any) {
-    const where = currentUser.role === UserRole.AGENT 
-      ? { assignedUserId: currentUser.id } 
+    let where: any = currentUser.role === UserRole.AGENT
+      ? { assignedUserId: currentUser.id }
       : {};
+
+    // Add tenant filter
+    where = this.prisma.addTenantFilter(where);
 
     const [statusStats, priorityStats, totalTasks, overdueTasks] = await Promise.all([
       this.prisma.task.groupBy({
@@ -209,13 +219,16 @@ export class TasksService {
     const futureDate = new Date();
     futureDate.setDate(futureDate.getDate() + days);
 
-    const where: any = {
+    let where: any = {
       dueDate: {
         gte: new Date(),
         lte: futureDate,
       },
       status: { not: TaskStatus.COMPLETED },
     };
+
+    // Add tenant filter first
+    where = this.prisma.addTenantFilter(where);
 
     if (currentUser.role === UserRole.AGENT) {
       where.assignedUserId = currentUser.id;

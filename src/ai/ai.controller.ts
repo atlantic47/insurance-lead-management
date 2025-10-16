@@ -155,18 +155,22 @@ export class AIController {
   @Public()
   @Post('widget/chat')
   @ApiOperation({ summary: 'Handle widget chat message' })
-  async widgetChat(@Body() body: {
-    message: string;
-    conversationId: string;
-    widgetId?: string;
-    url?: string;
-    domain?: string;
-    userInfo?: { name?: string; email?: string; phone?: string };
-  }) {
+  async widgetChat(
+    @Body() body: {
+      message: string;
+      conversationId: string;
+      widgetId?: string;
+      widgetToken: string; // REQUIRED: Signed token for tenant verification
+      url?: string;
+      domain?: string;
+      userInfo?: { name?: string; email?: string; phone?: string };
+    }
+  ) {
     return this.aiService.handleWidgetChat(
       body.message,
       body.conversationId,
       body.widgetId,
+      body.widgetToken,
       body.url,
       body.domain,
       body.userInfo

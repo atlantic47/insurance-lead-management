@@ -27,6 +27,7 @@ export class UsersService {
     const hashedPassword = await bcrypt.hash(createUserDto.password, 12);
 
     return this.prisma.user.create({
+      // @ts-ignore - tenantId added by Prisma middleware
       data: {
         ...createUserDto,
         password: hashedPassword,

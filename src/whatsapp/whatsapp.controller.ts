@@ -13,6 +13,7 @@ import {
   Param,
 } from '@nestjs/common';
 import { Public } from '../common/decorators/public.decorator';
+import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { WhatsAppService } from './whatsapp.service';
 import { WhatsAppConversationService } from './whatsapp-conversation.service';
 import { WhatsAppTokenService } from './whatsapp-token.service';
@@ -32,49 +33,63 @@ export class WhatsAppController {
     private configService: ConfigService,
   ) {}
 
+  // Tenant-specific webhook endpoint: /whatsapp/webhook/:tenantId
   @Public()
-  @Get('webhook')
-  verifyWebhook(
+  @Get('webhook/:tenantId')
+  async verifyWebhook(
+    @Param('tenantId') tenantId: string,
     @Query('hub.mode') mode: string,
     @Query('hub.verify_token') token: string,
     @Query('hub.challenge') challenge: string,
-  ): string {
-    this.logger.log('Webhook verification request received');
-    
-    const result = this.whatsappService.verifyWebhook(mode, token, challenge);
-    
+  ): Promise<string> {
+    this.logger.log(`Webhook verification for tenant ${tenantId}`);
+
+    const result = await this.whatsappService.verifyWebhookForTenant(
+      tenantId,
+      mode,
+      token,
+      challenge,
+    );
+
     if (result) {
-      this.logger.log('Webhook verification successful');
+      this.logger.log(`Webhook verification successful for tenant ${tenantId}`);
       return result;
     } else {
-      this.logger.error('Webhook verification failed');
+      this.logger.error(`Webhook verification failed for tenant ${tenantId}`);
       throw new UnauthorizedException('Webhook verification failed');
     }
   }
 
+  // Tenant-specific webhook POST endpoint
   @Public()
-  @Post('webhook')
+  @Post('webhook/:tenantId')
   @HttpCode(HttpStatus.OK)
   async handleWebhook(
+    @Param('tenantId') tenantId: string,
     @Body() body: any,
     @Headers('x-hub-signature-256') signature: string,
   ): Promise<{ status: string }> {
     try {
-      this.logger.log('=== WEBHOOK POST REQUEST RECEIVED ===');
+      this.logger.log(`=== WEBHOOK POST for tenant ${tenantId} ===`);
       this.logger.log('Raw webhook payload:', JSON.stringify(body, null, 2));
-      this.logger.log('Signature header:', signature);
 
-      // Validate webhook signature (temporarily disabled for testing)
+      // Validate webhook signature with tenant-specific secret
       const bodyString = JSON.stringify(body);
-      if (signature && !this.whatsappService.validateWebhookSignature(signature, bodyString)) {
-        this.logger.warn('Invalid webhook signature - continuing anyway for testing');
-        // throw new UnauthorizedException('Invalid signature');
+      const isValid = await this.whatsappService.validateWebhookSignatureForTenant(
+        tenantId,
+        signature,
+        bodyString,
+      );
+
+      if (!isValid) {
+        this.logger.warn(`Invalid webhook signature for tenant ${tenantId}`);
+        throw new UnauthorizedException('Invalid signature');
       }
 
       // Parse webhook payload
       this.logger.log('Attempting to parse webhook payload...');
       const parsed = this.whatsappService.parseWebhookPayload(body);
-      
+
       if (!parsed) {
         this.logger.warn('❌ PARSE FAILED: No messages found in webhook payload');
         this.logger.warn('Payload structure check - body.entry exists:', !!body.entry);
@@ -106,14 +121,15 @@ export class WhatsAppController {
 
         // Only process text messages for now
         if (message.type === 'text' && message.text?.body) {
-          await this.conversationService.processIncomingMessage(message, contact);
+          await this.conversationService.processIncomingMessage(message, contact, tenantId);
         } else {
           this.logger.log(`Unsupported message type: ${message.type}`);
-          
+
           // Send unsupported message response
           await this.whatsappService.sendMessage(
             message.from,
-            'Thank you for your message. Currently, I can only process text messages. Please send your message as text, and I\'ll be happy to help!'
+            'Thank you for your message. Currently, I can only process text messages. Please send your message as text, and I\'ll be happy to help!',
+            tenantId
           );
         }
       }
@@ -134,13 +150,14 @@ export class WhatsAppController {
 
   @Post('send-message')
   async sendMessage(
-    @Body() body: { to: string; message: string; agentId?: string }
+    @Body() body: { to: string; message: string; agentId?: string },
+    @CurrentUser() user: any
   ): Promise<{ success: boolean; error?: string }> {
     try {
       this.logger.log(`Manual message send request to ${body.to}`);
 
-      const success = await this.whatsappService.sendMessage(body.to, body.message);
-      
+      const success = await this.whatsappService.sendMessage(body.to, body.message, user.tenantId);
+
       if (success) {
         this.logger.log(`Message sent successfully to ${body.to}`);
         return { success: true };
@@ -155,14 +172,14 @@ export class WhatsAppController {
   }
 
   @Public()
-  @Get('test')
-  async testConnection(): Promise<{ status: string; message: string }> {
+  @Get('test/:tenantId')
+  async testConnection(@Param('tenantId') tenantId: string): Promise<{ status: string; message: string }> {
     try {
       // Test sending a message to the test number
-      const testNumber = '+15550935798'; // Your test number
+      const testNumber = '+15550935798';
       const testMessage = 'Hello! This is a test message from your insurance WhatsApp integration. If you receive this, the setup is working correctly!';
 
-      const success = await this.whatsappService.sendMessage(testNumber, testMessage);
+      const success = await this.whatsappService.sendMessage(testNumber, testMessage, tenantId);
 
       if (success) {
         return {
@@ -185,7 +202,7 @@ export class WhatsAppController {
     }
   }
 
-  @Public()
+  // SECURITY FIX: Removed @Public() - requires authentication
   @Get('conversations')
   async getConversations(): Promise<{ conversations: any[] }> {
     try {
@@ -196,7 +213,7 @@ export class WhatsAppController {
     }
   }
 
-  @Public()
+  // SECURITY FIX: Removed @Public() - requires authentication
   @Get('conversation/:id/lead')
   async getConversationLead(@Param('id') conversationId: string): Promise<{ leadId?: string; lead?: any; error?: string }> {
     try {

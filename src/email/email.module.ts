@@ -5,6 +5,7 @@ import { EmailFetcherService } from './email-fetcher.service';
 import { EmailQueueService } from './email-queue.service';
 import { SmtpEmailService } from './smtp-email.service';
 import { PrismaService } from '../common/services/prisma.service';
+import { EncryptionService } from '../common/services/encryption.service';
 import { QueueService } from '../common/services/queue.service';
 import { SettingsModule } from '../settings/settings.module';
 
@@ -17,6 +18,7 @@ import { SettingsModule } from '../settings/settings.module';
     EmailQueueService,
     SmtpEmailService,
     PrismaService,
+    EncryptionService,
     QueueService
   ],
   exports: [EmailService, EmailFetcherService, EmailQueueService, SmtpEmailService],

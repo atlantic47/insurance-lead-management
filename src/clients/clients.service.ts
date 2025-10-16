@@ -10,16 +10,19 @@ export class ClientsService {
     const { page, limit, search, sortBy, sortOrder } = paginationDto;
     const skip = (page - 1) * limit;
 
-    const where = search
-      ? {
-          OR: [
-            { firstName: { contains: search } },
-            { lastName: { contains: search } },
-            { email: { contains: search } },
-            { policyNumber: { contains: search } },
-          ],
-        }
-      : {};
+    let where: any = {};
+
+    // Add tenant filter first
+    where = this.prisma.addTenantFilter(where);
+
+    if (search) {
+      where.OR = [
+        { firstName: { contains: search } },
+        { lastName: { contains: search } },
+        { email: { contains: search } },
+        { policyNumber: { contains: search } },
+      ];
+    }
 
     const orderBy = sortBy ? { [sortBy]: sortOrder } : { createdAt: sortOrder };
 
@@ -70,6 +73,7 @@ export class ClientsService {
     const { firstName, lastName, email, phone, policyNumber, premium, commission, startDate, renewalDate } = createClientDto;
 
     const client = await this.prisma.client.create({
+      // @ts-ignore - tenantId added by Prisma middleware
       data: {
         firstName,
         lastName,
@@ -96,8 +100,13 @@ export class ClientsService {
   }
 
   async findOne(id: string) {
-    const client = await this.prisma.client.findUnique({
-      where: { id },
+    let where: any = { id };
+
+    // Add tenant filter
+    where = this.prisma.addTenantFilter(where);
+
+    const client = await this.prisma.client.findFirst({
+      where,
       include: {
         lead: {
           include: {
@@ -130,11 +139,8 @@ export class ClientsService {
   }
 
   async update(id: string, updateClientDto: any) {
-    const client = await this.prisma.client.findUnique({ where: { id } });
-
-    if (!client) {
-      throw new NotFoundException('Client not found');
-    }
+    // Validate tenant access
+    await this.findOne(id);
 
     const { firstName, lastName, email, phone, policyNumber, premium, commission, startDate, renewalDate, isActive } = updateClientDto;
 
@@ -166,33 +172,43 @@ export class ClientsService {
   }
 
   async getClientStats() {
+    let baseWhere: any = {};
+    baseWhere = this.prisma.addTenantFilter(baseWhere);
+
+    let activeWhere: any = { isActive: true };
+    activeWhere = this.prisma.addTenantFilter(activeWhere);
+
+    let renewalWhere: any = {
+      renewalDate: {
+        gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
+        lt: new Date(new Date().getFullYear(), new Date().getMonth() + 1, 1),
+      },
+    };
+    renewalWhere = this.prisma.addTenantFilter(renewalWhere);
+
     const [totalClients, activeClients, renewalsThisMonth] = await Promise.all([
-      this.prisma.client.count(),
-      this.prisma.client.count({ where: { isActive: true } }),
-      this.prisma.client.count({
-        where: {
-          renewalDate: {
-            gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
-            lt: new Date(new Date().getFullYear(), new Date().getMonth() + 1, 1),
-          },
-        },
-      }),
+      this.prisma.client.count({ where: baseWhere }),
+      this.prisma.client.count({ where: activeWhere }),
+      this.prisma.client.count({ where: renewalWhere }),
     ]);
+
+    let productGroupWhere: any = { productId: { not: null } };
+    productGroupWhere = this.prisma.addTenantFilter(productGroupWhere);
 
     const productStats = await this.prisma.client.groupBy({
       by: ['productId'],
       _count: { id: true },
-      where: { productId: { not: null } },
+      where: productGroupWhere,
     });
 
     const totalPremiums = await this.prisma.client.aggregate({
       _sum: { premium: true },
-      where: { isActive: true },
+      where: activeWhere,
     });
 
     const totalCommissions = await this.prisma.client.aggregate({
       _sum: { commission: true },
-      where: { isActive: true },
+      where: activeWhere,
     });
 
     return {
@@ -206,11 +222,8 @@ export class ClientsService {
   }
 
   async updatePolicy(id: string, updateData: any) {
-    const client = await this.prisma.client.findUnique({ where: { id } });
-
-    if (!client) {
-      throw new NotFoundException('Client not found');
-    }
+    // Validate tenant access
+    await this.findOne(id);
 
     return this.prisma.client.update({
       where: { id },
@@ -222,14 +235,19 @@ export class ClientsService {
     const futureDate = new Date();
     futureDate.setDate(futureDate.getDate() + days);
 
-    return this.prisma.client.findMany({
-      where: {
-        renewalDate: {
-          lte: futureDate,
-          gte: new Date(),
-        },
-        isActive: true,
+    let where: any = {
+      renewalDate: {
+        lte: futureDate,
+        gte: new Date(),
       },
+      isActive: true,
+    };
+
+    // Add tenant filter
+    where = this.prisma.addTenantFilter(where);
+
+    return this.prisma.client.findMany({
+      where,
       include: {
         product: {
           select: {

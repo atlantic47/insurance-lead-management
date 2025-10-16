@@ -23,6 +23,7 @@ export class CommunicationsService {
     }
 
     const communication = await this.prisma.communication.create({
+      // @ts-ignore - tenantId added by Prisma middleware
       data: {
         ...createCommunicationDto,
         userId,
@@ -62,6 +63,9 @@ export class CommunicationsService {
     const skip = (page - 1) * limit;
 
     let where: any = {};
+
+    // Add tenant filter first
+    where = this.prisma.addTenantFilter(where);
 
     if (currentUser.role === UserRole.AGENT) {
       where.lead = { assignedUserId: currentUser.id };
@@ -132,7 +136,10 @@ export class CommunicationsService {
   }
 
   async findOne(id: string, currentUser: any) {
-    const where: any = { id };
+    let where: any = { id };
+
+    // Add tenant filter first
+    where = this.prisma.addTenantFilter(where);
 
     if (currentUser.role === UserRole.AGENT) {
       where.lead = { assignedUserId: currentUser.id };
@@ -187,24 +194,26 @@ export class CommunicationsService {
   }
 
   async getLeadCommunications(leadId: string, currentUser: any) {
-    let lead;
-    
+    let leadWhere: any = { id: leadId };
+    leadWhere = this.prisma.addTenantFilter(leadWhere);
+
     if (currentUser.role === UserRole.AGENT) {
-      lead = await this.prisma.lead.findFirst({
-        where: { id: leadId, assignedUserId: currentUser.id },
-      });
-    } else {
-      lead = await this.prisma.lead.findUnique({
-        where: { id: leadId },
-      });
+      leadWhere.assignedUserId = currentUser.id;
     }
+
+    const lead = await this.prisma.lead.findFirst({
+      where: leadWhere,
+    });
 
     if (!lead) {
       throw new NotFoundException('Lead not found or access denied');
     }
 
+    let commWhere: any = { leadId };
+    commWhere = this.prisma.addTenantFilter(commWhere);
+
     return this.prisma.communication.findMany({
-      where: { leadId },
+      where: commWhere,
       orderBy: { sentAt: 'desc' },
       include: {
         user: {
@@ -219,9 +228,14 @@ export class CommunicationsService {
   }
 
   async getCommunicationStats(currentUser: any) {
-    const where = currentUser.role === UserRole.AGENT 
-      ? { lead: { assignedUserId: currentUser.id } } 
-      : {};
+    let where: any = {};
+
+    // Add tenant filter first
+    where = this.prisma.addTenantFilter(where);
+
+    if (currentUser.role === UserRole.AGENT) {
+      where.lead = { assignedUserId: currentUser.id };
+    }
 
     const [channelStats, directionStats, totalCommunications, unreadCount] = await Promise.all([
       this.prisma.communication.groupBy({

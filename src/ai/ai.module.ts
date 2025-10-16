@@ -4,6 +4,7 @@ import { MulterModule } from '@nestjs/platform-express';
 import { AIService } from './ai.service';
 import { AIController } from './ai.controller';
 import { OpenAIService } from './openai.service';
+import { WidgetAuthService } from './widget-auth.service';
 import { PrismaService } from '../common/services/prisma.service';
 import { SettingsModule } from '../settings/settings.module';
 
@@ -18,7 +19,7 @@ import { SettingsModule } from '../settings/settings.module';
     }),
   ],
   controllers: [AIController],
-  providers: [AIService, OpenAIService, PrismaService],
-  exports: [AIService, OpenAIService],
+  providers: [AIService, OpenAIService, WidgetAuthService, PrismaService],
+  exports: [AIService, OpenAIService, WidgetAuthService],
 })
 export class AIModule {}

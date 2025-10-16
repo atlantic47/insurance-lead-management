@@ -134,8 +134,15 @@ export class EmailController {
 
   @Post('test-connection')
   @ApiOperation({ summary: 'Test IMAP server connection' })
-  async testConnection() {
-    const isConnected = await this.emailFetcherService.testConnection();
+  async testConnection(@CurrentUser() user: any) {
+    const tenantId = user.tenantId;
+    if (!tenantId) {
+      return {
+        success: false,
+        message: 'Tenant ID not found in user context',
+      };
+    }
+    const isConnected = await this.emailFetcherService.testConnection(tenantId);
     return {
       success: isConnected,
       message: isConnected ? 'Connection successful' : 'Connection failed',

@@ -126,6 +126,7 @@ export class WhatsAppTokenService {
   private async saveTokenToDatabase(token: string, expiresAt: Date) {
     try {
       await this.prisma.aIConversation.create({
+      // @ts-ignore - tenantId added by Prisma middleware
         data: {
           type: 'WHATSAPP_TOKEN',
           input: 'Token refresh',

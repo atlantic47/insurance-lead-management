@@ -1,6 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { EmailService } from './email.service';
+import { PrismaService } from '../common/services/prisma.service';
+import { EncryptionService } from '../common/services/encryption.service';
 import Imap = require('node-imap');
 import { simpleParser } from 'mailparser';
 import { Readable } from 'stream';
@@ -21,36 +23,84 @@ export class EmailFetcherService {
   private readonly logger = new Logger(EmailFetcherService.name);
   private imap: Imap | null = null;
   private isConnected = false;
+  private currentTenantId: string | null = null;
 
   constructor(
     private configService: ConfigService,
     private emailService: EmailService,
+    private prisma: PrismaService,
+    private encryptionService: EncryptionService,
   ) {}
 
-  private getImapConfig(): ImapConfig {
+  private async getImapConfig(tenantId: string): Promise<ImapConfig | null> {
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { settings: true },
+    });
+
+    if (!tenant || !tenant.settings) {
+      this.logger.warn(`No tenant found or no settings for tenant ${tenantId}`);
+      return null;
+    }
+
+    const settings = tenant.settings as any;
+
+    // Try IMAP settings first, then fall back to SMTP/email settings
+    let emailCreds = settings.credentials?.imap || settings.credentials?.email || settings.credentials?.smtp;
+
+    if (!emailCreds || !emailCreds.user || !emailCreds.pass || !emailCreds.host) {
+      this.logger.warn(`Incomplete email credentials for tenant ${tenantId}. Available: ${Object.keys(settings.credentials || {}).join(', ')}`);
+      return null;
+    }
+
+    // DECRYPT the password if it's encrypted
+    let password = emailCreds.pass;
+    if (this.encryptionService.isEncrypted(password)) {
+      try {
+        password = this.encryptionService.decrypt(password);
+        this.logger.log(`Password decrypted successfully for ${emailCreds.user}`);
+      } catch (error) {
+        this.logger.error(`Failed to decrypt password for tenant ${tenantId}:`, error);
+        return null;
+      }
+    }
+
+    // For SMTP settings, IMAP typically uses same host
+    const imapHost = emailCreds.imapHost || emailCreds.host;
+    const imapPort = emailCreds.imapPort || 993; // Default IMAP SSL port
+
+    this.logger.log(`IMAP Config: ${emailCreds.user}@${imapHost}:${imapPort}`);
+
     return {
-      user: this.configService.get<string>('EMAIL_USER') || 'sales@pestraid.co.ke',
-      password: this.configService.get<string>('EMAIL_PASSWORD') || 'yQzMzSjF[2I%',
-      host: this.configService.get<string>('EMAIL_HOST') || 'mail.pestraid.co.ke',
-      port: this.configService.get<number>('EMAIL_IMAP_PORT') || 993,
+      user: emailCreds.user,
+      password: password,
+      host: imapHost,
+      port: imapPort,
       tls: true,
       tlsOptions: {
-        rejectUnauthorized: false, // Set to true in production with proper SSL
+        rejectUnauthorized: false,
       },
     };
   }
 
-  async connectToImap(): Promise<boolean> {
-    return new Promise((resolve) => {
+  async connectToImap(tenantId: string): Promise<boolean> {
+    return new Promise(async (resolve) => {
       try {
-        const config = this.getImapConfig();
+        const config = await this.getImapConfig(tenantId);
+        if (!config) {
+          this.logger.error(`Cannot connect to IMAP: No valid credentials for tenant ${tenantId}`);
+          resolve(false);
+          return;
+        }
+
+        this.currentTenantId = tenantId;
         this.logger.log('Attempting IMAP connection with config:', {
           user: config.user,
           host: config.host,
           port: config.port,
           tls: config.tls,
         });
-        
+
         this.imap = new Imap(config);
 
         this.imap.once('ready', () => {
@@ -79,9 +129,9 @@ export class EmailFetcherService {
     });
   }
 
-  async fetchNewEmails(): Promise<void> {
-    if (!this.isConnected || !this.imap) {
-      const connected = await this.connectToImap();
+  async fetchNewEmails(tenantId: string): Promise<void> {
+    if (!this.isConnected || !this.imap || this.currentTenantId !== tenantId) {
+      const connected = await this.connectToImap(tenantId);
       if (!connected) {
         this.logger.error('Could not connect to IMAP server');
         return;
@@ -194,7 +244,7 @@ export class EmailFetcherService {
   private async parseEmailStream(stream: NodeJS.ReadableStream): Promise<void> {
     try {
       const parsed = await simpleParser(stream as Readable);
-      
+
       const emailData = {
         from: parsed.from?.text || '',
         to: parsed.to?.text || '',
@@ -213,10 +263,23 @@ export class EmailFetcherService {
         threadId = parsed.inReplyTo;
       }
 
-      await this.emailService.handleIncomingEmail({
-        ...emailData,
-        threadId,
-      });
+      // Import tenant context
+      const { tenantContext } = require('../common/context/tenant-context');
+
+      // Run in tenant context
+      await tenantContext.run(
+        {
+          tenantId: this.currentTenantId,
+          userId: null,
+          isSuperAdmin: false
+        },
+        async () => {
+          await this.emailService.handleIncomingEmail({
+            ...emailData,
+            threadId,
+          });
+        }
+      );
 
       this.logger.log(`Successfully processed email: ${emailData.subject}`);
     } catch (error) {
@@ -238,8 +301,8 @@ export class EmailFetcherService {
     }
   }
 
-  async testConnection(): Promise<boolean> {
-    const connected = await this.connectToImap();
+  async testConnection(tenantId: string): Promise<boolean> {
+    const connected = await this.connectToImap(tenantId);
     if (connected) {
       await this.disconnectImap();
     }
@@ -247,15 +310,15 @@ export class EmailFetcherService {
   }
 
   // Method to manually trigger email fetching (useful for testing)
-  async fetchEmailsNow(): Promise<{ success: boolean; count?: number; error?: string }> {
+  async fetchEmailsNow(tenantId: string): Promise<{ success: boolean; count?: number; error?: string }> {
     try {
-      await this.fetchNewEmails();
+      await this.fetchNewEmails(tenantId);
       return { success: true };
     } catch (error) {
       this.logger.error('Manual email fetch failed:', error);
-      return { 
-        success: false, 
-        error: error instanceof Error ? error.message : 'Unknown error' 
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error'
       };
     }
   }

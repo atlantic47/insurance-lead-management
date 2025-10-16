@@ -31,7 +31,7 @@ export class ChatController {
     private readonly whatsappConversationService: WhatsAppConversationService,
   ) {}
 
-  @Public()
+  // SECURITY FIX: Removed @Public() - requires authentication
   @Get('conversations')
   @ApiOperation({ summary: 'Get all chat conversations' })
   @ApiQuery({ name: 'page', required: false, type: Number })
@@ -82,7 +82,7 @@ export class ChatController {
     return { ...result, escalatedBy: user.id, escalationReason: data.reason || 'manual_takeover' };
   }
 
-  @Public()
+  // SECURITY FIX: Removed @Public() - requires authentication
   @Post('send-message')
   @ApiOperation({ summary: 'Send message to WhatsApp conversation' })
   async sendMessage(

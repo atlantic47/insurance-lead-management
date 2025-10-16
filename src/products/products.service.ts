@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../common/services/prisma.service';
+import { getTenantContext } from '../common/context/tenant-context';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { PaginationDto, PaginationResult } from '../common/dto/pagination.dto';
@@ -10,8 +11,14 @@ export class ProductsService {
   constructor(private prisma: PrismaService) {}
 
   async create(createProductDto: CreateProductDto) {
+    const context = getTenantContext();
+    const tenantId = context?.tenantId || 'default-tenant-000';
+
     return this.prisma.product.create({
-      data: createProductDto,
+      data: {
+        ...createProductDto,
+        tenant: { connect: { id: tenantId } },
+      },
     });
   }
 
@@ -20,6 +27,9 @@ export class ProductsService {
     const skip = (page - 1) * limit;
 
     let where: any = {};
+
+    // Add tenant filter first
+    where = this.prisma.addTenantFilter(where);
 
     if (search) {
       where.OR = [
@@ -64,8 +74,13 @@ export class ProductsService {
   }
 
   async findOne(id: string) {
-    const product = await this.prisma.product.findUnique({
-      where: { id },
+    let where: any = { id };
+
+    // Add tenant filter
+    where = this.prisma.addTenantFilter(where);
+
+    const product = await this.prisma.product.findFirst({
+      where,
       include: {
         _count: {
           select: {
@@ -94,13 +109,8 @@ export class ProductsService {
   }
 
   async update(id: string, updateProductDto: UpdateProductDto) {
-    const product = await this.prisma.product.findUnique({
-      where: { id },
-    });
-
-    if (!product) {
-      throw new NotFoundException('Product not found');
-    }
+    // Validate tenant access
+    await this.findOne(id);
 
     return this.prisma.product.update({
       where: { id },
@@ -109,13 +119,8 @@ export class ProductsService {
   }
 
   async remove(id: string) {
-    const product = await this.prisma.product.findUnique({
-      where: { id },
-    });
-
-    if (!product) {
-      throw new NotFoundException('Product not found');
-    }
+    // Validate tenant access
+    await this.findOne(id);
 
     return this.prisma.product.update({
       where: { id },
@@ -124,8 +129,11 @@ export class ProductsService {
   }
 
   async getRecommendations(leadId: string) {
-    const lead = await this.prisma.lead.findUnique({
-      where: { id: leadId },
+    let leadWhere: any = { id: leadId };
+    leadWhere = this.prisma.addTenantFilter(leadWhere);
+
+    const lead = await this.prisma.lead.findFirst({
+      where: leadWhere,
       include: {
         leadProducts: {
           include: {
@@ -141,12 +149,15 @@ export class ProductsService {
 
     const existingProductIds = lead.leadProducts.map(lp => lp.productId);
 
+    let productWhere: any = {
+      type: lead.insuranceType,
+      isActive: true,
+      id: { notIn: existingProductIds },
+    };
+    productWhere = this.prisma.addTenantFilter(productWhere);
+
     const recommendations = await this.prisma.product.findMany({
-      where: {
-        type: lead.insuranceType,
-        isActive: true,
-        id: { notIn: existingProductIds },
-      },
+      where: productWhere,
       take: 5,
       orderBy: {
         createdAt: 'desc',
@@ -167,12 +178,18 @@ export class ProductsService {
   }
 
   async addToLead(leadId: string, productId: string, interest: number = 1, notes?: string) {
-    const lead = await this.prisma.lead.findUnique({
-      where: { id: leadId },
+    let leadWhere: any = { id: leadId };
+    leadWhere = this.prisma.addTenantFilter(leadWhere);
+
+    const lead = await this.prisma.lead.findFirst({
+      where: leadWhere,
     });
 
-    const product = await this.prisma.product.findUnique({
-      where: { id: productId },
+    let productWhere: any = { id: productId };
+    productWhere = this.prisma.addTenantFilter(productWhere);
+
+    const product = await this.prisma.product.findFirst({
+      where: productWhere,
     });
 
     if (!lead) {
@@ -184,6 +201,7 @@ export class ProductsService {
     }
 
     return this.prisma.leadProduct.create({
+      // @ts-ignore - tenantId added by Prisma middleware
       data: {
         leadId,
         productId,
@@ -204,17 +222,24 @@ export class ProductsService {
   }
 
   async getProductStats() {
+    let baseWhere: any = {};
+    baseWhere = this.prisma.addTenantFilter(baseWhere);
+
+    let activeWhere: any = { isActive: true };
+    activeWhere = this.prisma.addTenantFilter(activeWhere);
+
     const [typeStats, totalProducts, activeProducts] = await Promise.all([
       this.prisma.product.groupBy({
         by: ['type'],
         _count: { id: true },
-        where: { isActive: true },
+        where: activeWhere,
       }),
-      this.prisma.product.count(),
-      this.prisma.product.count({ where: { isActive: true } }),
+      this.prisma.product.count({ where: baseWhere }),
+      this.prisma.product.count({ where: activeWhere }),
     ]);
 
     const popularProducts = await this.prisma.product.findMany({
+      where: baseWhere,
       take: 5,
       orderBy: {
         clients: {

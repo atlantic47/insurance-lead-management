@@ -92,15 +92,34 @@ export class EmailQueueService implements OnModuleInit {
   private async processEmailFetchJob(job: Job<EmailFetchJobData>): Promise<void> {
     try {
       this.logger.log(`Fetching emails (triggered by: ${job.data.triggered})`);
-      
-      // Use the existing email fetcher service
-      const result = await this.emailFetcherService.fetchEmailsNow();
-      
-      if (!result.success) {
-        throw new Error(result.error || 'Email fetch failed');
+
+      // Fetch emails for all active tenants
+      const tenants = await this.emailService['prisma'].tenant.findMany({
+        where: {
+          status: { in: ['active', 'trial'] },
+        },
+        select: { id: true, name: true },
+      });
+
+      this.logger.log(`Fetching emails for ${tenants.length} tenants`);
+
+      for (const tenant of tenants) {
+        try {
+          this.logger.log(`Fetching emails for tenant: ${tenant.name} (${tenant.id})`);
+          const result = await this.emailFetcherService.fetchEmailsNow(tenant.id);
+
+          if (!result.success) {
+            this.logger.warn(`Email fetch failed for tenant ${tenant.id}: ${result.error}`);
+          } else {
+            this.logger.log(`Email fetch successful for tenant ${tenant.id}`);
+          }
+        } catch (tenantError) {
+          this.logger.error(`Error fetching emails for tenant ${tenant.id}:`, tenantError);
+          // Continue with next tenant
+        }
       }
 
-      this.logger.log(`Email fetch completed successfully (job: ${job.id})`);
+      this.logger.log(`Email fetch completed for all tenants (job: ${job.id})`);
     } catch (error) {
       this.logger.error(`Email fetch job failed: ${job.id}`, error);
       throw error;

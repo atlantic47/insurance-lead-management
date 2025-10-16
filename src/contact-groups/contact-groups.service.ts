@@ -12,6 +12,7 @@ export class ContactGroupsService {
     const { leadIds, ...groupData } = createDto;
 
     const group = await this.prisma.contactGroup.create({
+      // @ts-ignore - tenantId added by Prisma middleware
       data: {
         ...groupData,
         createdById: userId,
@@ -48,8 +49,13 @@ export class ContactGroupsService {
   }
 
   async findAll(userId: string) {
+    let where: any = { createdById: userId };
+
+    // Add tenant filter
+    where = this.prisma.addTenantFilter(where);
+
     return this.prisma.contactGroup.findMany({
-      where: { createdById: userId },
+      where,
       include: {
         _count: {
           select: { leads: true },
@@ -60,8 +66,13 @@ export class ContactGroupsService {
   }
 
   async findOne(id: string, userId: string) {
+    let where: any = { id, createdById: userId };
+
+    // Add tenant filter
+    where = this.prisma.addTenantFilter(where);
+
     const group = await this.prisma.contactGroup.findFirst({
-      where: { id, createdById: userId },
+      where,
       include: {
         leads: {
           include: {

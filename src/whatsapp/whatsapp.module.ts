@@ -7,15 +7,35 @@ import { WhatsAppConversationService } from './whatsapp-conversation.service';
 import { WhatsAppTokenService } from './whatsapp-token.service';
 import { WhatsAppTokenManagerService } from './whatsapp-token-manager.service';
 import { WhatsAppTemplateService } from './whatsapp-template.service';
+import { WhatsAppTenantService } from './whatsapp-tenant.service';
 import { OpenAIService } from '../ai/openai.service';
 import { AIService } from '../ai/ai.service';
+import { WidgetAuthService } from '../ai/widget-auth.service';
 import { PrismaService } from '../common/services/prisma.service';
 import { SettingsModule } from '../settings/settings.module';
 
 @Module({
   imports: [ConfigModule, ScheduleModule, SettingsModule],
   controllers: [WhatsAppController],
-  providers: [WhatsAppService, WhatsAppConversationService, WhatsAppTokenService, WhatsAppTokenManagerService, WhatsAppTemplateService, OpenAIService, AIService, PrismaService],
-  exports: [WhatsAppService, WhatsAppConversationService, WhatsAppTokenService, WhatsAppTokenManagerService, WhatsAppTemplateService],
+  providers: [
+    WhatsAppService,
+    WhatsAppConversationService,
+    WhatsAppTokenService,
+    WhatsAppTokenManagerService,
+    WhatsAppTemplateService,
+    WhatsAppTenantService,
+    OpenAIService,
+    AIService,
+    WidgetAuthService,
+    PrismaService,
+  ],
+  exports: [
+    WhatsAppService,
+    WhatsAppConversationService,
+    WhatsAppTokenService,
+    WhatsAppTokenManagerService,
+    WhatsAppTemplateService,
+    WhatsAppTenantService,
+  ],
 })
 export class WhatsAppModule {}

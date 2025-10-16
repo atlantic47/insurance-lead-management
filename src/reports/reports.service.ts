@@ -9,14 +9,19 @@ export class ReportsService {
   async getLeadConversionReport(startDate?: Date, endDate?: Date) {
     const dateFilter = this.getDateFilter(startDate, endDate);
 
+    let where: any = dateFilter ? { createdAt: dateFilter } : {};
+    where = this.prisma.addTenantFilter(where);
+
+    let whereWon: any = { status: LeadStatus.CLOSED_WON };
+    if (dateFilter) whereWon.createdAt = dateFilter;
+    whereWon = this.prisma.addTenantFilter(whereWon);
+
     const [totalLeads, convertedLeads, leadsByStatus] = await Promise.all([
-      this.prisma.lead.count({ where: { createdAt: dateFilter } }),
-      this.prisma.lead.count({
-        where: { status: LeadStatus.CLOSED_WON, createdAt: dateFilter },
-      }),
+      this.prisma.lead.count({ where }),
+      this.prisma.lead.count({ where: whereWon }),
       this.prisma.lead.groupBy({
         by: ['status'],
-        where: { createdAt: dateFilter },
+        where,
         _count: { id: true },
       }),
     ]);
@@ -38,8 +43,11 @@ export class ReportsService {
   async getAgentPerformanceReport(startDate?: Date, endDate?: Date) {
     const dateFilter = this.getDateFilter(startDate, endDate);
 
+    let userWhere: any = { role: UserRole.AGENT, isActive: true };
+    userWhere = this.prisma.addTenantFilter(userWhere);
+
     const agents = await this.prisma.user.findMany({
-      where: { role: UserRole.AGENT, isActive: true },
+      where: userWhere,
       select: {
         id: true,
         firstName: true,
@@ -101,17 +109,20 @@ export class ReportsService {
   async getCommunicationEffectivenessReport(startDate?: Date, endDate?: Date) {
     const dateFilter = this.getDateFilter(startDate, endDate);
 
+    let where: any = dateFilter ? { createdAt: dateFilter } : {};
+    where = this.prisma.addTenantFilter(where);
+
     const [channelStats, responseTimeStats, communicationsByDay] = await Promise.all([
       this.prisma.communication.groupBy({
         by: ['channel'],
-        where: { createdAt: dateFilter },
+        where,
         _count: { id: true },
       }),
       this.prisma.communication.findMany({
-        where: {
+        where: this.prisma.addTenantFilter({
           createdAt: dateFilter,
           direction: 'OUTBOUND',
-        },
+        }),
         include: {
           lead: {
             select: {
@@ -129,7 +140,7 @@ export class ReportsService {
       }),
       this.prisma.communication.groupBy({
         by: ['createdAt'],
-        where: { createdAt: dateFilter },
+        where,
         _count: { id: true },
       }),
     ]);
@@ -149,16 +160,23 @@ export class ReportsService {
   async getPipelineAnalytics(startDate?: Date, endDate?: Date) {
     const dateFilter = this.getDateFilter(startDate, endDate);
 
+    let where: any = dateFilter ? { createdAt: dateFilter } : {};
+    where = this.prisma.addTenantFilter(where);
+
+    let whereWon: any = { status: LeadStatus.CLOSED_WON };
+    if (dateFilter) whereWon.createdAt = dateFilter;
+    whereWon = this.prisma.addTenantFilter(whereWon);
+
     const [statusFlow, avgTimeInStages, sourcePerformance] = await Promise.all([
       this.prisma.lead.groupBy({
         by: ['status', 'source'],
-        where: { createdAt: dateFilter },
+        where,
         _count: { id: true },
       }),
       this.calculateAverageTimeInStages(dateFilter),
       this.prisma.lead.groupBy({
         by: ['source'],
-        where: { createdAt: dateFilter, status: LeadStatus.CLOSED_WON },
+        where: whereWon,
         _count: { id: true },
       }),
     ]);
@@ -179,38 +197,76 @@ export class ReportsService {
   }
 
   async getDashboard(startDate?: Date, endDate?: Date) {
+    let baseWhere: any = {};
+    baseWhere = this.prisma.addTenantFilter(baseWhere);
+
+    let inProgressWhere: any = { status: 'IN_PROGRESS' };
+    inProgressWhere = this.prisma.addTenantFilter(inProgressWhere);
+
+    let pendingWhere: any = { status: 'PENDING' };
+    pendingWhere = this.prisma.addTenantFilter(pendingWhere);
+
     const [
-      leadConversion,
-      agentPerformance,
-      communicationStats,
-      pipelineAnalytics,
+      totalLeads,
+      totalClients,
+      activeTasks,
+      pendingTasks,
+      recentLeads,
+      pipelineData,
+      revenue,
     ] = await Promise.all([
-      this.getLeadConversionReport(startDate, endDate),
-      this.getAgentPerformanceReport(startDate, endDate),
-      this.getCommunicationEffectivenessReport(startDate, endDate),
-      this.getPipelineAnalytics(startDate, endDate),
+      this.prisma.lead.count({ where: baseWhere }),
+      this.prisma.client.count({ where: baseWhere }),
+      this.prisma.task.count({ where: inProgressWhere }),
+      this.prisma.task.count({ where: pendingWhere }),
+      this.prisma.lead.findMany({
+        where: baseWhere,
+        take: 10,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          assignedUser: {
+            select: {
+              firstName: true,
+              lastName: true,
+            }
+          }
+        },
+      }),
+      this.prisma.lead.groupBy({
+        by: ['status'],
+        where: baseWhere,
+        _count: { id: true },
+      }),
+      this.prisma.client.aggregate({
+        where: baseWhere,
+        _sum: {
+          premium: true,
+        },
+      }),
     ]);
 
+    const conversionRate = totalLeads > 0
+      ? parseFloat(((totalClients / totalLeads) * 100).toFixed(2))
+      : 0;
+
     return {
-      period: { startDate, endDate },
-      leadConversion: {
-        totalLeads: leadConversion.totalLeads,
-        convertedLeads: leadConversion.convertedLeads,
-        conversionRate: leadConversion.conversionRate,
-      },
-      agentPerformance: {
-        totalAgents: agentPerformance.summary.totalAgents,
-        averageConversionRate: agentPerformance.summary.averageConversionRate,
-        totalLeadsAssigned: agentPerformance.summary.totalLeadsAssigned,
-      },
-      communications: {
-        totalCommunications: communicationStats.totalCommunications,
-        channelBreakdown: communicationStats.channelBreakdown,
-      },
-      pipeline: {
-        statusFlow: pipelineAnalytics.statusFlow,
-        sourcePerformance: pipelineAnalytics.sourcePerformance,
-      },
+      totalLeads,
+      totalClients,
+      conversionRate,
+      activeTasks,
+      pendingTasks,
+      revenue: revenue._sum.premium ? parseFloat(revenue._sum.premium.toString()) : 0,
+      recentActivity: recentLeads.map(lead => ({
+        id: lead.id,
+        type: 'lead_created',
+        message: `New lead: ${lead.firstName} ${lead.lastName}`,
+        timestamp: lead.createdAt,
+        user: lead.assignedUser ? `${lead.assignedUser.firstName} ${lead.assignedUser.lastName}` : null,
+      })),
+      pipelineData: pipelineData.map(item => ({
+        status: item.status,
+        count: item._count.id,
+      })),
     };
   }
 
@@ -262,5 +318,107 @@ export class ReportsService {
       'QUALIFIED_TO_PROPOSAL': '1.8 days',
       'PROPOSAL_TO_CLOSED': '5.2 days',
     };
+  }
+
+  async getLeadMetrics(startDate?: Date, endDate?: Date) {
+    let whereClause: any = this.buildDateWhereClause(startDate, endDate);
+    whereClause = this.prisma.addTenantFilter(whereClause);
+
+    const [totalLeads, statusBreakdown, sourceBreakdown, trends] = await Promise.all([
+      this.prisma.lead.count({ where: whereClause }),
+      this.prisma.lead.groupBy({
+        by: ['status'],
+        where: whereClause,
+        _count: { id: true },
+      }),
+      this.prisma.lead.groupBy({
+        by: ['source'],
+        where: whereClause,
+        _count: { id: true },
+      }),
+      this.getLeadTrends(startDate, endDate),
+    ]);
+
+    return {
+      totalLeads,
+      statusBreakdown: statusBreakdown.map(item => ({
+        status: item.status,
+        count: item._count.id,
+      })),
+      sourceBreakdown: sourceBreakdown.map(item => ({
+        source: item.source,
+        count: item._count.id,
+      })),
+      trends,
+    };
+  }
+
+  async getPerformanceMetrics(startDate?: Date, endDate?: Date) {
+    const whereClause = this.buildDateWhereClause(startDate, endDate);
+
+    let userWhere: any = { role: { in: [UserRole.AGENT, UserRole.MANAGER] } };
+    userWhere = this.prisma.addTenantFilter(userWhere);
+
+    const agents = await this.prisma.user.findMany({
+      where: userWhere,
+      include: {
+        assignedLeads: {
+          where: whereClause,
+          include: { client: true },
+        },
+        tasks: {
+          where: whereClause,
+        },
+      },
+    });
+
+    return agents.map(agent => ({
+      id: agent.id,
+      name: `${agent.firstName} ${agent.lastName}`,
+      totalLeads: agent.assignedLeads.length,
+      convertedLeads: agent.assignedLeads.filter(l => l.client).length,
+      conversionRate: agent.assignedLeads.length > 0
+        ? parseFloat(((agent.assignedLeads.filter(l => l.client).length / agent.assignedLeads.length) * 100).toFixed(2))
+        : 0,
+      tasksCompleted: agent.tasks.filter(t => t.status === 'COMPLETED').length,
+      tasksTotal: agent.tasks.length,
+    }));
+  }
+
+  private buildDateWhereClause(startDate?: Date, endDate?: Date) {
+    const where: any = {};
+    if (startDate || endDate) {
+      where.createdAt = {};
+      if (startDate) where.createdAt.gte = startDate;
+      if (endDate) where.createdAt.lte = endDate;
+    }
+    return where;
+  }
+
+  private async getLeadTrends(startDate?: Date, endDate?: Date) {
+    let whereClause: any = this.buildDateWhereClause(startDate, endDate);
+    whereClause = this.prisma.addTenantFilter(whereClause);
+
+    // Group leads by day for trend analysis
+    const leads = await this.prisma.lead.findMany({
+      where: whereClause,
+      select: {
+        createdAt: true,
+        status: true,
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    // Group by date
+    const trendsMap = new Map<string, number>();
+    leads.forEach(lead => {
+      const dateKey = lead.createdAt.toISOString().split('T')[0];
+      trendsMap.set(dateKey, (trendsMap.get(dateKey) || 0) + 1);
+    });
+
+    return Array.from(trendsMap.entries()).map(([date, count]) => ({
+      date,
+      count,
+    }));
   }
 }

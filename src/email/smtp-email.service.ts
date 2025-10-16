@@ -1,47 +1,70 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as nodemailer from 'nodemailer';
-import { SettingsService } from '../settings/settings.service';
+import { PrismaService } from '../common/services/prisma.service';
+import { getTenantContext } from '../common/context/tenant-context';
 
 @Injectable()
 export class SmtpEmailService {
   private readonly logger = new Logger(SmtpEmailService.name);
-  private transporter: nodemailer.Transporter;
+  private transporters: Map<string, nodemailer.Transporter> = new Map();
 
   constructor(
     private configService: ConfigService,
-    private settingsService: SettingsService,
-  ) {
-    this.createTransporter();
+    private prisma: PrismaService,
+  ) {}
+
+  private async createTransporter(tenantId: string): Promise<nodemailer.Transporter | null> {
+    try {
+      const tenant = await this.prisma.tenant.findUnique({
+        where: { id: tenantId },
+        select: { settings: true },
+      });
+
+      if (!tenant || !tenant.settings) {
+        this.logger.warn(`No tenant settings found for tenant ${tenantId}`);
+        return null;
+      }
+
+      const settings = tenant.settings as any;
+      const emailCreds = settings.credentials?.email;
+
+      if (!emailCreds || !emailCreds.smtpHost || !emailCreds.smtpUser || !emailCreds.smtpPass) {
+        this.logger.warn(`Incomplete SMTP credentials for tenant ${tenantId}`);
+        return null;
+      }
+
+      const transporter = nodemailer.createTransport({
+        host: emailCreds.smtpHost,
+        port: parseInt(emailCreds.smtpPort || '465'),
+        secure: emailCreds.smtpSecure !== 'false',
+        auth: {
+          user: emailCreds.smtpUser,
+          pass: emailCreds.smtpPass,
+        },
+        tls: {
+          rejectUnauthorized: false,
+        },
+      });
+
+      this.transporters.set(tenantId, transporter);
+      return transporter;
+    } catch (error) {
+      this.logger.error(`Error creating transporter for tenant ${tenantId}:`, error);
+      return null;
+    }
   }
 
-  private async createTransporter() {
-    // Try to get settings from database first, fallback to env variables
-    const smtpHost = await this.settingsService.getSetting('SMTP', 'host') || this.configService.get<string>('SMTP_HOST');
-    const smtpPort = await this.settingsService.getSetting('SMTP', 'port') || this.configService.get<string>('SMTP_PORT', '465');
-    const smtpSecure = await this.settingsService.getSetting('SMTP', 'secure') || this.configService.get<string>('SMTP_SECURE', 'true');
-    const smtpUser = await this.settingsService.getSetting('SMTP', 'user') || this.configService.get<string>('SMTP_USER');
-    const smtpPass = await this.settingsService.getSetting('SMTP', 'pass') || this.configService.get<string>('SMTP_PASS');
-
-    // Use custom SMTP server configuration
-    this.transporter = nodemailer.createTransport({
-      host: smtpHost,
-      port: parseInt(smtpPort),
-      secure: smtpSecure === 'true', // true for 465, false for other ports
-      auth: {
-        user: smtpUser,
-        pass: smtpPass,
-      },
-      tls: {
-        // Do not fail on invalid certs for development
-        rejectUnauthorized: false,
-      },
-    });
+  private async getTransporter(tenantId: string): Promise<nodemailer.Transporter | null> {
+    if (this.transporters.has(tenantId)) {
+      return this.transporters.get(tenantId)!;
+    }
+    return await this.createTransporter(tenantId);
   }
 
-  async refreshTransporter() {
-    // Call this method to refresh SMTP settings after user updates them
-    await this.createTransporter();
+  async refreshTransporter(tenantId: string) {
+    this.transporters.delete(tenantId);
+    await this.createTransporter(tenantId);
   }
 
   async sendEmail(emailData: {
@@ -58,7 +81,27 @@ export class SmtpEmailService {
     }>;
   }): Promise<{ success: boolean; messageId?: string; error?: string }> {
     try {
-      const smtpFrom = await this.settingsService.getSetting('SMTP', 'from') || this.configService.get<string>('SMTP_FROM') || 'noreply@insurance.com';
+      const context = getTenantContext();
+      const tenantId = context?.tenantId;
+
+      if (!tenantId) {
+        throw new Error('Tenant context required to send email');
+      }
+
+      const transporter = await this.getTransporter(tenantId);
+      if (!transporter) {
+        throw new Error('Unable to create email transporter for tenant');
+      }
+
+      // Get tenant email settings for "from" address
+      const tenant = await this.prisma.tenant.findUnique({
+        where: { id: tenantId },
+        select: { settings: true },
+      });
+
+      const settings = tenant?.settings as any;
+      const emailCreds = settings?.credentials?.email;
+      const smtpFrom = emailCreds?.smtpFrom || emailCreds?.smtpUser || 'noreply@insurance.com';
 
       const mailOptions = {
         from: emailData.from || smtpFrom,
@@ -72,7 +115,7 @@ export class SmtpEmailService {
 
       this.logger.log(`Sending email to ${emailData.to} with subject: ${emailData.subject}`);
 
-      const info = await this.transporter.sendMail(mailOptions);
+      const info = await transporter.sendMail(mailOptions);
 
       this.logger.log(`Email sent successfully: ${info.messageId}`);
 
@@ -89,9 +132,14 @@ export class SmtpEmailService {
     }
   }
 
-  async testConnection(): Promise<boolean> {
+  async testConnection(tenantId: string): Promise<boolean> {
     try {
-      await this.transporter.verify();
+      const transporter = await this.getTransporter(tenantId);
+      if (!transporter) {
+        this.logger.error(`No transporter available for tenant ${tenantId}`);
+        return false;
+      }
+      await transporter.verify();
       this.logger.log('SMTP connection successful');
       return true;
     } catch (error) {

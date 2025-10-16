@@ -1,91 +1,117 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../common/services/prisma.service';
-import * as crypto from 'crypto';
+import { EncryptionService } from '../common/services/encryption.service';
+import { getTenantContext } from '../common/context/tenant-context';
 
 @Injectable()
 export class SettingsService {
-  private readonly encryptionKey: string;
-  private readonly algorithm = 'aes-256-gcm';
-
-  constructor(private prisma: PrismaService) {
-    // Use JWT_SECRET as encryption key (must be 32 bytes for aes-256)
-    const secret = process.env.JWT_SECRET || 'default-secret-key-change-this';
-    this.encryptionKey = crypto.createHash('sha256').update(secret).digest('hex').substring(0, 32);
-  }
-
-  private encrypt(text: string): string {
-    const iv = crypto.randomBytes(16);
-    const cipher = crypto.createCipheriv(this.algorithm, this.encryptionKey, iv);
-
-    let encrypted = cipher.update(text, 'utf8', 'hex');
-    encrypted += cipher.final('hex');
-
-    const authTag = cipher.getAuthTag();
-
-    // Return iv:authTag:encrypted
-    return `${iv.toString('hex')}:${authTag.toString('hex')}:${encrypted}`;
-  }
-
-  private decrypt(encryptedText: string): string {
-    const parts = encryptedText.split(':');
-    const iv = Buffer.from(parts[0], 'hex');
-    const authTag = Buffer.from(parts[1], 'hex');
-    const encrypted = parts[2];
-
-    const decipher = crypto.createDecipheriv(this.algorithm, this.encryptionKey, iv);
-    decipher.setAuthTag(authTag);
-
-    let decrypted = decipher.update(encrypted, 'hex', 'utf8');
-    decrypted += decipher.final('utf8');
-
-    return decrypted;
-  }
+  constructor(
+    private prisma: PrismaService,
+    private encryptionService: EncryptionService,
+  ) {}
 
   async getSetting(category: string, key: string): Promise<string | null> {
-    const setting = await this.prisma.systemSettings.findUnique({
-      where: { category_key: { category, key } },
+    const context = getTenantContext();
+    if (!context?.tenantId) {
+      throw new Error('Tenant context required');
+    }
+
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: context.tenantId },
+      select: { settings: true },
     });
 
-    if (!setting) {
+    if (!tenant?.settings) {
       return null;
     }
 
-    if (setting.isEncrypted) {
-      return this.decrypt(setting.value);
+    const settings = tenant.settings as any;
+    const categoryKey = category.toLowerCase();
+    const value = settings.credentials?.[categoryKey]?.[key];
+
+    if (!value) {
+      return null;
     }
 
-    return setting.value;
+    // Decrypt if the value is encrypted
+    if (this.encryptionService.isEncrypted(value)) {
+      try {
+        return this.encryptionService.decrypt(value);
+      } catch (error) {
+        console.error(`Failed to decrypt setting ${category}.${key}:`, error);
+        return null;
+      }
+    }
+
+    return value;
   }
 
   async getSettingsByCategory(category: string) {
-    const settings = await this.prisma.systemSettings.findMany({
-      where: { category },
+    const context = getTenantContext();
+    if (!context?.tenantId) {
+      throw new Error('Tenant context required');
+    }
+
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: context.tenantId },
+      select: { settings: true },
     });
 
-    return settings.map(setting => ({
-      key: setting.key,
-      value: setting.isEncrypted ? this.decrypt(setting.value) : setting.value,
-      description: setting.description,
-      isEncrypted: setting.isEncrypted,
-    }));
+    if (!tenant?.settings) {
+      return [];
+    }
+
+    const settings = tenant.settings as any;
+    const categoryKey = category.toLowerCase();
+    const categorySettings = settings.credentials?.[categoryKey] || {};
+
+    return Object.entries(categorySettings).map(([key, value]) => {
+      const strValue = value as string;
+      const isEncrypted = this.encryptionService.isEncrypted(strValue);
+
+      // Decrypt if encrypted
+      const decryptedValue = isEncrypted
+        ? this.encryptionService.decrypt(strValue)
+        : strValue;
+
+      return {
+        key,
+        value: decryptedValue,
+        description: null,
+        isEncrypted,
+      };
+    });
   }
 
   async getAllSettings() {
-    const settings = await this.prisma.systemSettings.findMany();
+    const context = getTenantContext();
+    if (!context?.tenantId) {
+      throw new Error('Tenant context required');
+    }
 
-    const grouped = settings.reduce((acc, setting) => {
-      if (!acc[setting.category]) {
-        acc[setting.category] = {};
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: context.tenantId },
+      select: { settings: true },
+    });
+
+    if (!tenant?.settings) {
+      return {};
+    }
+
+    const settings = tenant.settings as any;
+    const credentials = settings.credentials || {};
+
+    const grouped = {};
+    for (const [category, categorySettings] of Object.entries(credentials)) {
+      grouped[category.toUpperCase()] = {};
+      for (const [key, value] of Object.entries(categorySettings as any)) {
+        grouped[category.toUpperCase()][key] = {
+          value,
+          description: null,
+          isEncrypted: false,
+        };
       }
-
-      acc[setting.category][setting.key] = {
-        value: setting.isEncrypted ? this.decrypt(setting.value) : setting.value,
-        description: setting.description,
-        isEncrypted: setting.isEncrypted,
-      };
-
-      return acc;
-    }, {});
+    }
 
     return grouped;
   }
@@ -97,23 +123,42 @@ export class SettingsService {
     isEncrypted = false,
     description?: string,
   ) {
-    const finalValue = isEncrypted ? this.encrypt(value) : value;
+    const context = getTenantContext();
+    if (!context?.tenantId) {
+      throw new Error('Tenant context required');
+    }
 
-    return this.prisma.systemSettings.upsert({
-      where: { category_key: { category, key } },
-      update: {
-        value: finalValue,
-        isEncrypted,
-        description,
-      },
-      create: {
-        category,
-        key,
-        value: finalValue,
-        isEncrypted,
-        description,
-      },
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: context.tenantId },
+      select: { settings: true },
     });
+
+    const settings = (tenant?.settings as any) || { credentials: {} };
+    if (!settings.credentials) {
+      settings.credentials = {};
+    }
+
+    const categoryKey = category.toLowerCase();
+    if (!settings.credentials[categoryKey]) {
+      settings.credentials[categoryKey] = {};
+    }
+
+    // Encrypt sensitive settings based on category and key
+    const sensitiveKeys = ['password', 'secret', 'token', 'key', 'apiKey', 'clientSecret', 'appSecret'];
+    const shouldEncrypt = isEncrypted || sensitiveKeys.some(k => key.toLowerCase().includes(k));
+
+    const storedValue = shouldEncrypt && value
+      ? this.encryptionService.encrypt(value)
+      : value;
+
+    settings.credentials[categoryKey][key] = storedValue;
+
+    await this.prisma.tenant.update({
+      where: { id: context.tenantId },
+      data: { settings },
+    });
+
+    return { category, key, value: shouldEncrypt ? '***encrypted***' : value };
   }
 
   async updateMultipleSettings(settings: Array<{
@@ -123,26 +168,74 @@ export class SettingsService {
     isEncrypted?: boolean;
     description?: string;
   }>) {
-    const promises = settings.map(setting =>
-      this.updateSetting(
-        setting.category,
-        setting.key,
-        setting.value,
-        setting.isEncrypted,
-        setting.description,
-      ),
-    );
+    const context = getTenantContext();
+    if (!context?.tenantId) {
+      throw new Error('Tenant context required');
+    }
 
-    return Promise.all(promises);
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: context.tenantId },
+      select: { settings: true },
+    });
+
+    const tenantSettings = (tenant?.settings as any) || { credentials: {} };
+    if (!tenantSettings.credentials) {
+      tenantSettings.credentials = {};
+    }
+
+    const sensitiveKeys = ['password', 'secret', 'token', 'key', 'apiKey', 'clientSecret', 'appSecret'];
+
+    for (const setting of settings) {
+      const categoryKey = setting.category.toLowerCase();
+      if (!tenantSettings.credentials[categoryKey]) {
+        tenantSettings.credentials[categoryKey] = {};
+      }
+
+      // Encrypt sensitive settings
+      const shouldEncrypt = setting.isEncrypted || sensitiveKeys.some(k => setting.key.toLowerCase().includes(k));
+      const storedValue = shouldEncrypt && setting.value
+        ? this.encryptionService.encrypt(setting.value)
+        : setting.value;
+
+      tenantSettings.credentials[categoryKey][setting.key] = storedValue;
+    }
+
+    await this.prisma.tenant.update({
+      where: { id: context.tenantId },
+      data: { settings: tenantSettings },
+    });
+
+    return settings.map(s => ({
+      ...s,
+      value: (s.isEncrypted || sensitiveKeys.some(k => s.key.toLowerCase().includes(k))) ? '***encrypted***' : s.value,
+    }));
   }
 
   async deleteSetting(category: string, key: string) {
-    return this.prisma.systemSettings.delete({
-      where: { category_key: { category, key } },
+    const context = getTenantContext();
+    if (!context?.tenantId) {
+      throw new Error('Tenant context required');
+    }
+
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: context.tenantId },
+      select: { settings: true },
     });
+
+    const settings = (tenant?.settings as any) || { credentials: {} };
+    const categoryKey = category.toLowerCase();
+
+    if (settings.credentials?.[categoryKey]?.[key]) {
+      delete settings.credentials[categoryKey][key];
+      await this.prisma.tenant.update({
+        where: { id: context.tenantId },
+        data: { settings },
+      });
+    }
+
+    return { deleted: true };
   }
 
-  // Helper method to get all settings for a specific service
   async getServiceConfig(category: string): Promise<Record<string, string>> {
     const settings = await this.getSettingsByCategory(category);
     return settings.reduce((acc, setting) => {

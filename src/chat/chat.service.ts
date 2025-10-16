@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../common/services/prisma.service';
 import { LeadSource, LeadStatus, InsuranceType } from '@prisma/client';
+import { getTenantContext } from '../common/context/tenant-context';
 import OpenAI from 'openai';
 import { ConfigService } from '@nestjs/config';
 
@@ -37,6 +38,9 @@ export class ChatService {
     if (!lead) {
       // Create new lead from WhatsApp contact
       const nameParts = name ? name.split(' ') : ['Unknown', 'Contact'];
+      const context = getTenantContext();
+      const tenantId = context?.tenantId || 'default-tenant-000';
+
       lead = await this.prisma.lead.create({
         data: {
           firstName: nameParts[0],
@@ -44,7 +48,8 @@ export class ChatService {
           phone: phoneNumber,
           source: LeadSource.WHATSAPP,
           status: LeadStatus.NEW,
-          insuranceType: InsuranceType.OTHER, // Default until we know more
+          insuranceType: InsuranceType.OTHER,
+          tenant: { connect: { id: tenantId } },
         },
       });
     }
@@ -61,16 +66,32 @@ export class ChatService {
     leadId?: string;
     conversationId?: string;
   }) {
+    // CRITICAL: Get tenant context for security
+    const context = getTenantContext();
+    const tenantId = context?.tenantId;
+
+    if (!tenantId) {
+      throw new Error('Tenant context required to create chat message');
+    }
+
     return this.prisma.chatMessage.create({
-      data,
+      data: {
+        ...data,
+        tenantId, // CRITICAL: Add tenant isolation
+      },
     });
   }
 
   async getConversation(leadId: string) {
+    // CRITICAL: Get tenant context to filter chat messages
+    const context = getTenantContext();
+    const tenantId = context?.tenantId;
+
     return this.prisma.aIConversation.findFirst({
       where: { leadId },
       include: {
         chatMessages: {
+          where: tenantId ? { tenantId } : {}, // SECURITY FIX: Filter messages by tenant
           orderBy: { createdAt: 'asc' },
         },
         lead: {
@@ -89,26 +110,31 @@ export class ChatService {
 
   async getAllConversations(page = 1, limit = 20) {
     const skip = (page - 1) * limit;
-    
+
+    // CRITICAL: Get tenant context to filter chat messages
+    const context = getTenantContext();
+    const tenantId = context?.tenantId;
+
+    // CRITICAL SECURITY FIX: Filter conversations by tenant
+    let where: any = { type: 'WHATSAPP_CHAT' };
+    where = this.prisma.addTenantFilter(where);
+
     // Get WhatsApp conversations specifically
     const [whatsappConversations, total] = await Promise.all([
       this.prisma.aIConversation.findMany({
-        where: {
-          type: 'WHATSAPP_CHAT'
-        },
+        where,
         skip,
         take: limit,
         include: {
           chatMessages: {
+            where: tenantId ? { tenantId } : {}, // SECURITY FIX: Filter messages by tenant
             orderBy: { createdAt: 'asc' },
           },
         },
         orderBy: { createdAt: 'desc' },
       }),
       this.prisma.aIConversation.count({
-        where: {
-          type: 'WHATSAPP_CHAT'
-        }
+        where
       }),
     ]);
 
@@ -143,6 +169,7 @@ export class ChatService {
           if (lead) {
             await this.prisma.aIConversation.update({
               where: { id: conv.id },
+      // @ts-ignore - tenantId added by Prisma middleware
               data: {
                 metadata: {
                   ...conv.metadata as any,
@@ -261,19 +288,23 @@ Guidelines:
       const confidence = completion.choices[0]?.finish_reason === 'stop' ? 0.9 : 0.6;
 
       // Save AI conversation
+      const context = getTenantContext();
+      const tenantId = context?.tenantId || 'default-tenant-000';
+
       await this.prisma.aIConversation.create({
         data: {
           type: 'CHATBOT',
           input,
           output: aiResponse,
           confidence,
-          leadId,
+          lead: leadId ? { connect: { id: leadId } } : undefined,
           metadata: {
             timestamp: new Date(),
             platform: 'WHATSAPP',
             model: 'gpt-3.5-turbo',
             tokens: completion.usage?.total_tokens || 0,
           },
+          tenant: { connect: { id: tenantId } },
         },
       });
 
@@ -287,19 +318,23 @@ Guidelines:
       
       // Fallback response
       const fallbackResponse = "I'm having trouble processing your request right now. Let me connect you with one of our insurance specialists who can help you immediately.";
-      
+
+      const context = getTenantContext();
+      const tenantId = context?.tenantId || 'default-tenant-000';
+
       await this.prisma.aIConversation.create({
         data: {
           type: 'CHATBOT',
           input,
           output: fallbackResponse,
           confidence: 0.3,
-          leadId,
+          lead: leadId ? { connect: { id: leadId } } : undefined,
           metadata: {
             timestamp: new Date(),
             platform: 'WHATSAPP',
             error: error.message,
           },
+          tenant: { connect: { id: tenantId } },
         },
       });
 
@@ -379,12 +414,17 @@ Guidelines:
         leadId: lead.id,
       });
 
+      // CRITICAL: Get tenant context to filter chat messages
+      const context = getTenantContext();
+      const tenantId = context?.tenantId;
+
       // Get or create conversation - look for any existing conversation for this lead
       let conversation = await this.prisma.aIConversation.findFirst({
         where: { leadId: lead.id },
         orderBy: { createdAt: 'desc' }, // Get the most recent conversation
         include: {
           chatMessages: {
+            where: tenantId ? { tenantId } : {}, // SECURITY FIX: Filter messages by tenant
             orderBy: { createdAt: 'asc' },
             take: 10, // Last 10 messages for context
           },
@@ -392,15 +432,20 @@ Guidelines:
       });
 
       if (!conversation) {
+        const tenantIdOrDefault = tenantId || 'default-tenant-000';
+
         conversation = await this.prisma.aIConversation.create({
           data: {
             type: 'CHATBOT',
             input: message,
             output: '',
-            leadId: lead.id,
+            lead: { connect: { id: lead.id } },
+            tenant: { connect: { id: tenantIdOrDefault } },
           },
           include: {
-            chatMessages: true,
+            chatMessages: {
+              where: tenantId ? { tenantId } : {}, // SECURITY FIX: Filter messages by tenant
+            },
           },
         });
       }

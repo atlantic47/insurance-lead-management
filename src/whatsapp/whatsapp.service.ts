@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { WhatsAppTokenManagerService } from './whatsapp-token-manager.service';
+import { WhatsAppTenantService } from './whatsapp-tenant.service';
 import { SettingsService } from '../settings/settings.service';
 import axios from 'axios';
 
@@ -29,29 +30,36 @@ export class WhatsAppService {
   constructor(
     private configService: ConfigService,
     private tokenManager: WhatsAppTokenManagerService,
+    private tenantService: WhatsAppTenantService,
     private settingsService: SettingsService,
   ) {}
 
-  private async getHeaders() {
-    const token = await this.tokenManager.getValidToken();
+  private async getHeaders(tenantId: string) {
+    const token = await this.tenantService.getAccessToken(tenantId);
+    if (!token) {
+      throw new Error(`No WhatsApp access token configured for tenant ${tenantId}`);
+    }
+
     return {
       'Authorization': `Bearer ${token}`,
       'Content-Type': 'application/json',
     };
   }
 
-  async sendMessage(to: string, message: string): Promise<boolean> {
+  async sendMessage(to: string, message: string, tenantId: string): Promise<boolean> {
     let retryCount = 0;
     const maxRetries = 2;
 
-    // Check if WhatsApp should run in production mode
     const isProductionMode = this.configService.get('WHATSAPP_PRODUCTION_MODE') === 'true';
     const isTestMode = !isProductionMode;
 
     while (retryCount <= maxRetries) {
       try {
-        // Try to get from database first, fallback to env
-        const phoneNumberId = await this.settingsService.getSetting('WHATSAPP', 'phone_number_id') || this.configService.get('WHATSAPP_PHONE_NUMBER_ID');
+        const phoneNumberId = await this.tenantService.getPhoneNumberId(tenantId);
+        if (!phoneNumberId) {
+          throw new Error(`No WhatsApp phone number ID configured for tenant ${tenantId}`);
+        }
+
         const url = `${this.baseUrl}/${phoneNumberId}/messages`;
         
         const payload = {
@@ -64,8 +72,8 @@ export class WhatsAppService {
       };
 
       this.logger.log(`📤 Sending WhatsApp message to ${to}: ${message.substring(0, 100)}...`);
-      
-        const headers = await this.getHeaders();
+
+        const headers = await this.getHeaders(tenantId);
         
         // In test mode, log what we would send but don't actually send
         if (isTestMode) {
@@ -121,11 +129,16 @@ export class WhatsAppService {
     return false;
   }
 
-  async sendTypingIndicator(to: string): Promise<void> {
+  async sendTypingIndicator(to: string, tenantId: string): Promise<void> {
     try {
-      const phoneNumberId = this.configService.get('WHATSAPP_PHONE_NUMBER_ID');
+      const phoneNumberId = await this.tenantService.getPhoneNumberId(tenantId);
+      if (!phoneNumberId) {
+        this.logger.warn(`No WhatsApp phone number configured for tenant ${tenantId}`);
+        return;
+      }
+
       const url = `${this.baseUrl}/${phoneNumberId}/messages`;
-      
+
       const payload = {
         messaging_product: 'whatsapp',
         recipient_type: 'individual',
@@ -136,34 +149,71 @@ export class WhatsAppService {
         }
       };
 
-      const headers = await this.getHeaders();
+      const headers = await this.getHeaders(tenantId);
       await axios.post(url, payload, { headers });
     } catch (error) {
       this.logger.warn('Failed to send typing indicator:', error.message);
     }
   }
 
-  async markMessageAsRead(messageId: string): Promise<void> {
+  async markMessageAsRead(messageId: string, tenantId: string): Promise<void> {
     try {
-      const phoneNumberId = this.configService.get('WHATSAPP_PHONE_NUMBER_ID');
+      const phoneNumberId = await this.tenantService.getPhoneNumberId(tenantId);
+      if (!phoneNumberId) {
+        this.logger.warn(`No WhatsApp phone number configured for tenant ${tenantId}`);
+        return;
+      }
+
       const url = `${this.baseUrl}/${phoneNumberId}/messages`;
-      
+
       const payload = {
         messaging_product: 'whatsapp',
         status: 'read',
         message_id: messageId
       };
 
-      const headers = await this.getHeaders();
+      const headers = await this.getHeaders(tenantId);
       await axios.post(url, payload, { headers });
     } catch (error) {
       this.logger.warn('Failed to mark message as read:', error.message);
     }
   }
 
+  // Tenant-specific webhook verification
+  async verifyWebhookForTenant(
+    tenantId: string,
+    mode: string,
+    token: string,
+    challenge: string,
+  ): Promise<string | null> {
+    if (mode !== 'subscribe') {
+      return null;
+    }
+
+    const isValid = await this.tenantService.verifyWebhookToken(tenantId, token);
+
+    if (isValid) {
+      this.logger.log(`Webhook verified for tenant ${tenantId}`);
+      return challenge;
+    } else {
+      this.logger.warn(`Webhook verification failed for tenant ${tenantId}`);
+      return null;
+    }
+  }
+
+  // Tenant-specific signature validation
+  async validateWebhookSignatureForTenant(
+    tenantId: string,
+    signature: string,
+    body: string,
+  ): Promise<boolean> {
+    return this.tenantService.validateSignature(tenantId, signature, body);
+  }
+
+  // Legacy method - kept for backward compatibility
   verifyWebhook(mode: string, token: string, challenge: string): string | null {
     const verifyToken = this.configService.get('WHATSAPP_VERIFY_TOKEN');
-    
+
     if (mode === 'subscribe' && token === verifyToken) {
       this.logger.log('Webhook verified successfully');
       return challenge;

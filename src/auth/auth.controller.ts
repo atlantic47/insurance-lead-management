@@ -16,6 +16,7 @@ import { LocalAuthGuard } from './guards/local-auth.guard';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { Public } from '../common/decorators/public.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { RegisterTenantDto } from '../tenants/dto/register-tenant.dto';
 
 @ApiTags('Authentication')
 @Controller('auth')
@@ -23,8 +24,17 @@ export class AuthController {
   constructor(private authService: AuthService) {}
 
   @Public()
+  @Post('register-tenant')
+  @ApiOperation({ summary: 'Register a new company/tenant with admin user' })
+  @ApiResponse({ status: 201, description: 'Tenant and admin user registered successfully' })
+  @ApiResponse({ status: 409, description: 'Email or subdomain already exists' })
+  async registerTenant(@Body() registerDto: RegisterTenantDto) {
+    return this.authService.registerTenant(registerDto);
+  }
+
+  @Public()
   @Post('register')
-  @ApiOperation({ summary: 'Register a new user' })
+  @ApiOperation({ summary: 'Register a new user (deprecated - use register-tenant)' })
   @ApiResponse({ status: 201, description: 'User registered successfully' })
   @ApiResponse({ status: 409, description: 'Email already exists' })
   async register(@Body() registerDto: RegisterDto) {

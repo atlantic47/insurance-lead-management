@@ -116,6 +116,7 @@
       .message { max-width: 80%; padding: 12px 16px; border-radius: 18px; font-size: 15px; line-height: 1.5; word-wrap: break-word; }\
       .message.user { background: ' + WIDGET_CONFIG.primaryColor + '; color: white; align-self: flex-end; border-bottom-right-radius: 4px; }\
       .message.bot { background: white; color: #1F2937; align-self: flex-start; border-bottom-left-radius: 4px; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05); }\
+      .message.system { background: #FEF3C7; color: #92400E; align-self: center; border-radius: 12px; font-size: 14px; padding: 10px 14px; max-width: 90%; text-align: center; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05); }\
       .message.typing { background: white; color: #6B7280; align-self: flex-start; border-bottom-left-radius: 4px; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05); padding: 16px; }\
       .typing-indicator { display: flex; gap: 6px; align-items: center; }\
       .typing-dot { width: 8px; height: 8px; border-radius: 50%; background: #9CA3AF; animation: typing 1.4s infinite; }\
@@ -307,8 +308,12 @@
         }, 1000);
       } else if (data.shouldEscalate && !data.alreadyEscalated) {
         setTimeout(function() {
-          addMessage('bot', 'I\'ve notified our team. An agent will contact you shortly.');
+          addMessage('system', '🤝 This conversation has been transferred to a human agent who will assist you shortly.');
         }, 1000);
+      } else if (data.alreadyEscalated) {
+        setTimeout(function() {
+          addMessage('system', '👤 You are now chatting with a human agent. They will respond to you shortly.');
+        }, 500);
       }
     } catch (error) {
       console.error('Chatbot error:', error);

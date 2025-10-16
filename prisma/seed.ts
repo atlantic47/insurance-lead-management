@@ -6,6 +6,23 @@ const prisma = new PrismaClient();
 async function main() {
   console.log('🌱 Starting database seeding...');
 
+  // Create or get default tenant
+  const tenant = await prisma.tenant.upsert({
+    where: { subdomain: 'default' },
+    update: {},
+    create: {
+      id: 'default-tenant-000',
+      name: 'Default Agency',
+      subdomain: 'default',
+      plan: 'enterprise',
+      status: 'active',
+      maxUsers: 100,
+      maxLeads: 100000,
+    },
+  });
+
+  console.log('✅ Default tenant created:', tenant.name);
+
   // Create admin user
   const hashedPassword = await bcrypt.hash('admin123', 12);
   
@@ -19,6 +36,7 @@ async function main() {
       lastName: 'Administrator',
       phone: '+1234567890',
       role: 'ADMIN',
+      tenant: { connect: { id: tenant.id } },
     },
   });
 
@@ -35,6 +53,7 @@ async function main() {
       lastName: 'Manager',
       phone: '+1234567891',
       role: 'MANAGER',
+      tenant: { connect: { id: tenant.id } },
     },
   });
 
@@ -52,6 +71,7 @@ async function main() {
         lastName: 'Smith',
         phone: '+1234567892',
         role: 'AGENT',
+        tenant: { connect: { id: tenant.id } },
       },
     }),
     prisma.user.upsert({
@@ -64,6 +84,7 @@ async function main() {
         lastName: 'Doe',
         phone: '+1234567893',
         role: 'AGENT',
+        tenant: { connect: { id: tenant.id } },
       },
     }),
   ]);
@@ -83,6 +104,7 @@ async function main() {
           term: '10-30 years',
           riders: ['Accidental Death', 'Disability Waiver'],
         },
+        tenant: { connect: { id: tenant.id } },
       },
     }),
     prisma.product.create({
@@ -96,6 +118,7 @@ async function main() {
           coverage: 'Nationwide',
           includes: ['Dental', 'Vision', 'Prescription'],
         },
+        tenant: { connect: { id: tenant.id } },
       },
     }),
     prisma.product.create({
@@ -108,6 +131,7 @@ async function main() {
           coverage: 'Collision & Comprehensive',
           extras: ['Roadside Assistance', 'Rental Car Coverage'],
         },
+        tenant: { connect: { id: tenant.id } },
       },
     }),
     prisma.product.create({
@@ -121,6 +145,7 @@ async function main() {
           liability: 'Up to $500K',
           extras: ['Natural Disaster Coverage'],
         },
+        tenant: { connect: { id: tenant.id } },
       },
     }),
   ]);
@@ -169,8 +194,9 @@ async function main() {
         zipCode: '78702',
         inquiryDetails: 'Looking for life insurance coverage for a family of 4',
         budget: 200.00,
-        assignedUserId: agents[0].id,
+        assignedUser: { connect: { id: agents[0].id } },
         score: 75.5,
+        tenant: { connect: { id: tenant.id } },
       },
     }),
     prisma.lead.create({
@@ -189,9 +215,10 @@ async function main() {
         zipCode: '77001',
         inquiryDetails: 'Need auto insurance for new car purchase',
         budget: 150.00,
-        assignedUserId: agents[1].id,
+        assignedUser: { connect: { id: agents[1].id } },
         score: 85.0,
         status: 'CONTACTED',
+        tenant: { connect: { id: tenant.id } },
       },
     }),
     prisma.lead.create({
@@ -210,9 +237,10 @@ async function main() {
         zipCode: '75201',
         inquiryDetails: 'Interested in health insurance options for self-employed',
         budget: 300.00,
-        assignedUserId: agents[0].id,
+        assignedUser: { connect: { id: agents[0].id } },
         score: 65.0,
         status: 'ENGAGED',
+        tenant: { connect: { id: tenant.id } },
       },
     }),
   ]);
@@ -223,37 +251,40 @@ async function main() {
   const communications = await Promise.all([
     prisma.communication.create({
       data: {
-        leadId: leads[0].id,
+        lead: { connect: { id: leads[0].id } },
         channel: 'EMAIL',
         direction: 'INBOUND',
         subject: 'Life Insurance Inquiry',
         content: 'Hi, I am interested in life insurance options for my family. Can you help me understand the different plans available?',
-        userId: agents[0].id,
+        user: { connect: { id: agents[0].id } },
         isRead: true,
+        tenant: { connect: { id: tenant.id } },
       },
     }),
     prisma.communication.create({
       data: {
-        leadId: leads[0].id,
+        lead: { connect: { id: leads[0].id } },
         channel: 'EMAIL',
         direction: 'OUTBOUND',
         subject: 'RE: Life Insurance Inquiry',
         content: 'Thank you for your interest! I would be happy to help you find the right life insurance plan for your family. Let me schedule a call to discuss your needs.',
-        userId: agents[0].id,
+        user: { connect: { id: agents[0].id } },
         isRead: true,
+        tenant: { connect: { id: tenant.id } },
       },
     }),
     prisma.communication.create({
       data: {
-        leadId: leads[1].id,
+        lead: { connect: { id: leads[1].id } },
         channel: 'PHONE',
         direction: 'OUTBOUND',
         content: 'Called to discuss auto insurance options. Customer is interested in full coverage plan.',
-        userId: agents[1].id,
+        user: { connect: { id: agents[1].id } },
         metadata: {
           duration: '15 minutes',
           outcome: 'positive',
         },
+        tenant: { connect: { id: tenant.id } },
       },
     }),
   ]);
@@ -269,8 +300,9 @@ async function main() {
         type: 'FOLLOW_UP',
         priority: 3,
         dueDate: new Date(Date.now() + 2 * 24 * 60 * 60 * 1000), // 2 days from now
-        leadId: leads[0].id,
-        assignedUserId: agents[0].id,
+        lead: { connect: { id: leads[0].id } },
+        assignedUser: { connect: { id: agents[0].id } },
+        tenant: { connect: { id: tenant.id } },
       },
     }),
     prisma.task.create({
@@ -280,8 +312,9 @@ async function main() {
         type: 'PROPOSAL',
         priority: 4,
         dueDate: new Date(Date.now() + 1 * 24 * 60 * 60 * 1000), // 1 day from now
-        leadId: leads[1].id,
-        assignedUserId: agents[1].id,
+        lead: { connect: { id: leads[1].id } },
+        assignedUser: { connect: { id: agents[1].id } },
+        tenant: { connect: { id: tenant.id } },
       },
     }),
     prisma.task.create({
@@ -291,8 +324,9 @@ async function main() {
         type: 'CALL',
         priority: 2,
         dueDate: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000), // 3 days from now
-        leadId: leads[2].id,
-        assignedUserId: agents[0].id,
+        lead: { connect: { id: leads[2].id } },
+        assignedUser: { connect: { id: agents[0].id } },
+        tenant: { connect: { id: tenant.id } },
       },
     }),
   ]);
@@ -307,11 +341,12 @@ async function main() {
         input: 'What types of insurance do you offer?',
         output: 'We offer various insurance products including Life, Health, Auto, Home, and Business insurance. Would you like more information about any specific type?',
         confidence: 0.95,
-        leadId: leads[0].id,
+        lead: { connect: { id: leads[0].id } },
         metadata: {
           timestamp: new Date(),
           channel: 'website-chat',
         },
+        tenant: { connect: { id: tenant.id } },
       },
     }),
     prisma.aIConversation.create({
@@ -320,10 +355,11 @@ async function main() {
         input: 'I am very satisfied with your service and would recommend it to others',
         output: JSON.stringify({ sentiment: 'positive', score: 0.9 }),
         confidence: 0.9,
-        leadId: leads[1].id,
+        lead: { connect: { id: leads[1].id } },
         metadata: {
           analysis: { sentiment: 'positive', score: 0.9 },
         },
+        tenant: { connect: { id: tenant.id } },
       },
     }),
   ]);
@@ -335,18 +371,19 @@ async function main() {
     where: { policyNumber: 'AUTO-2024-001' },
     update: {},
     create: {
-      leadId: leads[1].id,
+      lead: { connect: { id: leads[1].id } },
       firstName: 'Bob',
       lastName: 'Wilson',
       email: 'bob.wilson@example.com',
       phone: '+1555123002',
-      productId: products[2].id, // Auto Insurance
+      product: { connect: { id: products[2].id } },
       policyNumber: 'AUTO-2024-001',
       premium: 120.00,
       commission: 24.00,
       startDate: new Date(),
       endDate: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000), // 1 year from now
       renewalDate: new Date(Date.now() + 350 * 24 * 60 * 60 * 1000), // 350 days from now
+      tenant: { connect: { id: tenant.id } },
     },
   });
 
