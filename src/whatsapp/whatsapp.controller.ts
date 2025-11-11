@@ -35,54 +35,54 @@ export class WhatsAppController {
 
   // Tenant-specific webhook endpoint: /whatsapp/webhook/:tenantId
   @Public()
-  @Get('webhook/:tenantId')
+  @Get('webhook/:credentialId')
   async verifyWebhook(
-    @Param('tenantId') tenantId: string,
+    @Param('credentialId') credentialId: string,
     @Query('hub.mode') mode: string,
     @Query('hub.verify_token') token: string,
     @Query('hub.challenge') challenge: string,
   ): Promise<string> {
-    this.logger.log(`Webhook verification for tenant ${tenantId}`);
+    this.logger.log(`Webhook verification for credential ${credentialId}`);
 
-    const result = await this.whatsappService.verifyWebhookForTenant(
-      tenantId,
+    const result = await this.whatsappService.verifyWebhookForCredential(
+      credentialId,
       mode,
       token,
       challenge,
     );
 
     if (result) {
-      this.logger.log(`Webhook verification successful for tenant ${tenantId}`);
+      this.logger.log(`Webhook verification successful for credential ${credentialId}`);
       return result;
     } else {
-      this.logger.error(`Webhook verification failed for tenant ${tenantId}`);
+      this.logger.error(`Webhook verification failed for credential ${credentialId}`);
       throw new UnauthorizedException('Webhook verification failed');
     }
   }
 
-  // Tenant-specific webhook POST endpoint
+  // Credential-specific webhook POST endpoint
   @Public()
-  @Post('webhook/:tenantId')
+  @Post('webhook/:credentialId')
   @HttpCode(HttpStatus.OK)
   async handleWebhook(
-    @Param('tenantId') tenantId: string,
+    @Param('credentialId') credentialId: string,
     @Body() body: any,
     @Headers('x-hub-signature-256') signature: string,
   ): Promise<{ status: string }> {
     try {
-      this.logger.log(`=== WEBHOOK POST for tenant ${tenantId} ===`);
+      this.logger.log(`=== WEBHOOK POST for credential ${credentialId} ===`);
       this.logger.log('Raw webhook payload:', JSON.stringify(body, null, 2));
 
-      // Validate webhook signature with tenant-specific secret
+      // Validate webhook signature with credential-specific secret
       const bodyString = JSON.stringify(body);
-      const isValid = await this.whatsappService.validateWebhookSignatureForTenant(
-        tenantId,
+      const isValid = await this.whatsappService.validateWebhookSignatureForCredential(
+        credentialId,
         signature,
         bodyString,
       );
 
       if (!isValid) {
-        this.logger.warn(`Invalid webhook signature for tenant ${tenantId}`);
+        this.logger.warn(`Invalid webhook signature for credential ${credentialId}`);
         throw new UnauthorizedException('Invalid signature');
       }
 
@@ -121,7 +121,7 @@ export class WhatsAppController {
 
         // Only process text messages for now
         if (message.type === 'text' && message.text?.body) {
-          await this.conversationService.processIncomingMessage(message, contact, tenantId);
+          await this.conversationService.processIncomingMessage(message, contact);
         } else {
           this.logger.log(`Unsupported message type: ${message.type}`);
 
@@ -129,7 +129,7 @@ export class WhatsAppController {
           await this.whatsappService.sendMessage(
             message.from,
             'Thank you for your message. Currently, I can only process text messages. Please send your message as text, and I\'ll be happy to help!',
-            tenantId
+            credentialId
           );
         }
       }
@@ -138,11 +138,11 @@ export class WhatsAppController {
 
     } catch (error) {
       this.logger.error('Error handling webhook:', error);
-      
+
       if (error instanceof UnauthorizedException) {
         throw error;
       }
-      
+
       // Return OK to prevent Facebook from retrying
       return { status: 'error' };
     }

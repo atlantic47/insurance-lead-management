@@ -15,14 +15,40 @@ export class WebhookTenantMiddleware implements NestMiddleware {
 
   async use(req: Request, res: Response, next: NextFunction) {
     try {
-      // Extract tenantId from URL parameter (e.g., /whatsapp/webhook/:tenantId)
-      const tenantId = req.params['tenantId'];
+      let tenantId: string | undefined;
 
-      this.logger.log(`Webhook request for tenant: ${tenantId}`);
+      // Extract credentialId for WhatsApp webhooks or tenantId for other webhooks
+      const credentialId = req.params['credentialId'];
+      const directTenantId = req.params['tenantId'];
 
-      if (!tenantId) {
-        this.logger.error('No tenant ID in webhook URL');
-        throw new UnauthorizedException('Tenant ID required in webhook URL');
+      if (credentialId) {
+        // WhatsApp webhook - lookup tenant from credential
+        this.logger.log(`Webhook request for credential: ${credentialId}`);
+
+        const credential = await this.prisma.whatsAppCredential.findUnique({
+          where: { id: credentialId },
+          select: { tenantId: true, isActive: true },
+        });
+
+        if (!credential) {
+          this.logger.error(`Invalid credential ID: ${credentialId}`);
+          throw new UnauthorizedException('Invalid credential ID');
+        }
+
+        if (!credential.isActive) {
+          this.logger.error(`Inactive credential: ${credentialId}`);
+          throw new UnauthorizedException('Credential is not active');
+        }
+
+        tenantId = credential.tenantId;
+        this.logger.log(`Resolved tenant from credential: ${tenantId}`);
+      } else if (directTenantId) {
+        // Email or other webhook with direct tenantId
+        tenantId = directTenantId;
+        this.logger.log(`Webhook request for tenant: ${tenantId}`);
+      } else {
+        this.logger.error('No tenant ID or credential ID in webhook URL');
+        throw new UnauthorizedException('Tenant ID or Credential ID required in webhook URL');
       }
 
       // Verify tenant exists and is active
@@ -36,7 +62,8 @@ export class WebhookTenantMiddleware implements NestMiddleware {
         throw new UnauthorizedException('Invalid tenant ID');
       }
 
-      if (tenant.status !== 'active') {
+      // Allow webhooks for active and trial tenants
+      if (tenant.status !== 'active' && tenant.status !== 'trial') {
         this.logger.error(`Inactive tenant: ${tenantId} (status: ${tenant.status})`);
         throw new UnauthorizedException('Tenant account is not active');
       }

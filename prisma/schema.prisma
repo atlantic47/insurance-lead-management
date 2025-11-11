@@ -109,8 +109,63 @@ model Tenant {
   chatMessages       ChatMessage[]
   emailMessages      EmailMessage[]
   aiTrainingData     AITrainingData[]
+  emailCredentials   EmailCredential[]
+  whatsappCredentials WhatsAppCredential[]
 
   @@map("tenants")
+}
+
+// Email Credential Model - Multiple email accounts per tenant
+model EmailCredential {
+  id          String   @id @default(uuid())
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  name        String   // User-friendly name (e.g., "Support Email", "Sales Email")
+  host        String   // SMTP host
+  port        Int      // SMTP port
+  secure      Boolean  @default(true) // Use SSL/TLS
+  user        String   // SMTP username/email
+  pass        String   // Encrypted password
+  fromEmail   String   // From email address
+  fromName    String?  // From name
+
+  isDefault   Boolean  @default(false) // Default email for sending
+  isActive    Boolean  @default(true)
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("email_credentials")
+  @@index([tenantId])
+  @@index([tenantId, isDefault])
+}
+
+// WhatsApp Credential Model - Multiple WhatsApp numbers per tenant
+model WhatsAppCredential {
+  id                  String   @id @default(uuid())
+  tenantId            String
+  tenant              Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  name                String   // User-friendly name (e.g., "Main Support", "Sales Line")
+  phoneNumber         String   // Display phone number (e.g., "+1234567890")
+  phoneNumberId       String   // Meta Phone Number ID
+  businessAccountId   String   // Meta Business Account ID
+  accessToken         String   // Encrypted access token
+  appSecret           String?  // Encrypted app secret for webhook validation
+  webhookVerifyToken  String   // Webhook verification token (auto-generated on create)
+  webhookUrl          String   // Unique webhook URL for this credential (auto-generated on create)
+
+  isDefault           Boolean  @default(false) // Default number for sending
+  isActive            Boolean  @default(true)
+
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@map("whatsapp_credentials")
+  @@index([tenantId])
+  @@index([tenantId, isDefault])
+  @@index([phoneNumberId])
 }
 
 // Core Models

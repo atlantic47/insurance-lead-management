@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../common/services/prisma.service';
 import { getTenantContext } from '../common/context/tenant-context';
+import { SmtpEmailService } from '../email/smtp-email.service';
 import { CreateCampaignTemplateDto } from './dto/create-campaign-template.dto';
 import { UpdateCampaignTemplateDto } from './dto/update-campaign-template.dto';
 import { CreateCampaignDto } from './dto/create-campaign.dto';
@@ -8,7 +9,10 @@ import { UpdateCampaignDto } from './dto/update-campaign.dto';
 
 @Injectable()
 export class CampaignsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private smtpEmailService: SmtpEmailService,
+  ) {}
 
   // Campaign Templates
   async createTemplate(dto: CreateCampaignTemplateDto, userId: string) {
@@ -103,6 +107,9 @@ export class CampaignsService {
       ? new Date(dto.scheduledAt).toISOString()
       : undefined;
 
+    // Set status based on scheduledAt
+    const status = scheduledAt ? 'SCHEDULED' : 'DRAFT';
+
     const context = getTenantContext();
     const tenantId = context?.tenantId || 'default-tenant-000';
 
@@ -115,6 +122,7 @@ export class CampaignsService {
         subject: dto.subject,
         content: dto.content,
         scheduledAt,
+        status,
         totalRecipients: contactGroup._count.leads,
         contactGroup: { connect: { id: dto.contactGroupId } },
         createdBy: { connect: { id: userId } },
@@ -195,9 +203,25 @@ export class CampaignsService {
   async update(id: string, dto: UpdateCampaignDto, userId: string) {
     await this.findOne(id, userId);
 
+    // Convert scheduledAt to ISO-8601 DateTime if provided
+    const data: any = { ...dto };
+    if (data.scheduledAt) {
+      // If it's a string without seconds, convert to full ISO-8601
+      if (typeof data.scheduledAt === 'string' && !data.scheduledAt.includes(':00')) {
+        data.scheduledAt = new Date(data.scheduledAt + ':00Z').toISOString();
+      } else if (typeof data.scheduledAt === 'string') {
+        data.scheduledAt = new Date(data.scheduledAt).toISOString();
+      }
+
+      // Set status to SCHEDULED if scheduledAt is provided
+      if (!data.status) {
+        data.status = 'SCHEDULED';
+      }
+    }
+
     return this.prisma.campaign.update({
       where: { id },
-      data: dto,
+      data,
       include: {
         template: true,
         contactGroup: true,
@@ -238,17 +262,36 @@ export class CampaignsService {
     for (const lead of leads) {
       try {
         if (campaign.type === 'EMAIL') {
-          // Email: Use simple text replacement
-          let content = campaign.content || campaign.template?.content || '';
-          content = content
+          if (!lead.email) {
+            console.warn(`Lead ${lead.id} has no email address, skipping`);
+            failedCount++;
+            continue;
+          }
+
+          // Use HTML content if available (from template), otherwise use plain content
+          let htmlContent = campaign.template?.htmlContent || campaign.content || '';
+
+          // Replace merge fields in HTML content
+          htmlContent = htmlContent
             .replace(/{firstName}/g, lead.firstName || '')
             .replace(/{lastName}/g, lead.lastName || '')
             .replace(/{email}/g, lead.email || '')
             .replace(/{phone}/g, lead.phone || '');
 
-          // TODO: Send email using emailApi
-          console.log(`Sending email to ${lead.email}:`, content);
-          sentCount++;
+          // Send email using SMTP service
+          const emailResult = await this.smtpEmailService.sendEmail({
+            to: lead.email,
+            subject: campaign.subject || 'Message from us',
+            html: htmlContent,
+          });
+
+          if (emailResult.success) {
+            console.log(`Email sent successfully to ${lead.email}`);
+            sentCount++;
+          } else {
+            console.error(`Failed to send email to ${lead.email}: ${emailResult.error}`);
+            failedCount++;
+          }
 
         } else if (campaign.type === 'WHATSAPP') {
           // WhatsApp: Use WhatsApp Business API template format

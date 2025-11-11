@@ -28,7 +28,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
 
   async onModuleInit() {
     await this.$connect();
-    this.logger.log('✅ Prisma connected - Using manual tenant filtering via addTenantFilter()');
+    this.logger.log('✅ Prisma connected - tenantId must be explicitly provided in all creates');
   }
 
   async enableShutdownHooks(app: INestApplication) {

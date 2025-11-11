@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { WhatsAppTokenManagerService } from './whatsapp-token-manager.service';
 import { WhatsAppTenantService } from './whatsapp-tenant.service';
@@ -208,6 +208,98 @@ export class WhatsAppService {
     body: string,
   ): Promise<boolean> {
     return this.tenantService.validateSignature(tenantId, signature, body);
+  }
+
+  // Credential-specific webhook verification (NEW)
+  async verifyWebhookForCredential(
+    credentialId: string,
+    mode: string,
+    token: string,
+    challenge: string,
+  ): Promise<string | null> {
+    if (mode !== 'subscribe') {
+      return null;
+    }
+
+    try {
+      // Import dynamically to avoid circular dependency
+      const { PrismaClient } = require('@prisma/client');
+      const prisma = new PrismaClient();
+
+      const credential = await prisma.whatsAppCredential.findUnique({
+        where: { id: credentialId },
+      });
+
+      await prisma.$disconnect();
+
+      if (!credential) {
+        this.logger.warn(`Credential ${credentialId} not found`);
+        return null;
+      }
+
+      if (credential.webhookVerifyToken === token) {
+        this.logger.log(`Webhook verified for credential ${credentialId}`);
+        return challenge;
+      } else {
+        this.logger.warn(`Webhook verification failed for credential ${credentialId}`);
+        return null;
+      }
+    } catch (error) {
+      this.logger.error(`Error verifying webhook for credential ${credentialId}:`, error);
+      return null;
+    }
+  }
+
+  // Credential-specific signature validation (NEW)
+  async validateWebhookSignatureForCredential(
+    credentialId: string,
+    signature: string,
+    body: string,
+  ): Promise<boolean> {
+    try {
+      // Import dynamically to avoid circular dependency
+      const { PrismaClient } = require('@prisma/client');
+      const prisma = new PrismaClient();
+
+      const credential = await prisma.whatsAppCredential.findUnique({
+        where: { id: credentialId },
+      });
+
+      await prisma.$disconnect();
+
+      if (!credential || !credential.appSecret) {
+        this.logger.warn(`Credential ${credentialId} not found or no app secret configured`);
+        // If no app secret, skip validation (some setups don't require it)
+        return true;
+      }
+
+      // Decrypt app secret
+      const { EncryptionService } = require('../common/services/encryption.service');
+      const { ConfigService } = require('@nestjs/config');
+      const configService = new ConfigService();
+      const encryptionService = new EncryptionService(configService);
+
+      const appSecret = encryptionService.decrypt(credential.appSecret);
+
+      const crypto = require('crypto');
+      const expectedSignature = 'sha256=' + crypto
+        .createHmac('sha256', appSecret)
+        .update(body)
+        .digest('hex');
+
+      const isValid = signature === expectedSignature;
+
+      if (isValid) {
+        this.logger.log(`Webhook signature validated for credential ${credentialId}`);
+      } else {
+        this.logger.warn(`Invalid webhook signature for credential ${credentialId}`);
+      }
+
+      return isValid;
+    } catch (error) {
+      this.logger.error(`Error validating signature for credential ${credentialId}:`, error);
+      return false;
+    }
   }
 
   // Legacy method - kept for backward compatibility

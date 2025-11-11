@@ -98,14 +98,14 @@ export class WhatsAppConversationService {
     try {
       this.logger.log(`🤖 Starting AI response generation for message: "${message.text?.body}"`);
       
-      // Send typing indicator
-      try {
-        const tenantId = (conversation as any).tenantId;
-        await this.whatsappService.sendTypingIndicator(message.from, tenantId);
-        this.logger.log('✅ Typing indicator sent');
-      } catch (typingError) {
-        this.logger.warn('⚠️ Typing indicator failed:', typingError.message);
-      }
+      // Send typing indicator (disabled to avoid sending "..." message)
+      // try {
+      //   const tenantId = (conversation as any).tenantId;
+      //   await this.whatsappService.sendTypingIndicator(message.from, tenantId);
+      //   this.logger.log('✅ Typing indicator sent');
+      // } catch (typingError) {
+      //   this.logger.warn('⚠️ Typing indicator failed:', typingError.message);
+      // }
 
       // Get conversation history
       const history = await this.getConversationHistory(conversation.id, 10);
@@ -299,18 +299,24 @@ export class WhatsAppConversationService {
 
   private async createConversation(phoneNumber: string, customerName?: string): Promise<WhatsAppConversation> {
     try {
+      // Get tenant context
+      const context = getTenantContext();
+      if (!context?.tenantId) {
+        throw new Error('Tenant context is missing - cannot create conversation');
+      }
+
       // First, create or get the lead for this conversation
       const lead = await this.createOrGetLead(phoneNumber, customerName);
       this.logger.log(`Lead created/found for phone ${phoneNumber}: ${lead.id}`);
 
       // Create conversation in database
       const conversation = await this.prisma.aIConversation.create({
-      // @ts-ignore - tenantId added by Prisma middleware
         data: {
           type: 'WHATSAPP_CHAT',
           input: 'New WhatsApp conversation started',
           output: 'Conversation initialized',
           confidence: 1.0,
+          tenantId: context.tenantId, // Explicitly set tenantId
           metadata: {
             phoneNumber,
             customerName,
@@ -439,12 +445,21 @@ export class WhatsAppConversationService {
 
   private async createOrGetLead(phoneNumber: string, customerName?: string): Promise<any> {
     try {
+      // Get tenant context
+      const context = getTenantContext();
+      const tenantId = context?.tenantId;
+
+      if (!tenantId) {
+        throw new Error('SECURITY: Cannot create/get lead without tenant context');
+      }
+
       // Extract phone number without country code for storage
       const cleanPhoneNumber = phoneNumber.replace(/^\+1/, '').replace(/\D/g, '');
-      
-      // Check if lead already exists
+
+      // Check if lead already exists FOR THIS TENANT
       const existingLead = await this.prisma.lead.findFirst({
         where: {
+          tenantId,  // IMPORTANT: Filter by tenant!
           OR: [
             { phone: cleanPhoneNumber },
             { phone: phoneNumber },
@@ -453,14 +468,14 @@ export class WhatsAppConversationService {
       });
 
       if (existingLead) {
-        this.logger.log(`Found existing lead for phone number: ${phoneNumber}`);
+        this.logger.log(`Found existing lead for phone number ${phoneNumber} in tenant ${tenantId}`);
         return existingLead;
       }
 
       // Create new lead
       const leadData = {
-        firstName: customerName || 'WhatsApp',
-        lastName: 'Customer',
+        firstName: customerName || 'WhatsApp User',
+        lastName: '', // No last name by default
         email: `whatsapp_${cleanPhoneNumber}@temp.com`, // Temporary email
         phone: cleanPhoneNumber,
         status: LeadStatus.NEW,
@@ -468,13 +483,6 @@ export class WhatsAppConversationService {
         insuranceType: InsuranceType.AUTO, // Default insurance type
         inquiryDetails: `Auto-created from WhatsApp conversation`,
       };
-
-      const context = getTenantContext();
-      const tenantId = context?.tenantId;
-
-      if (!tenantId) {
-        throw new Error('SECURITY: Cannot create lead without tenant context');
-      }
 
       const newLead = await this.prisma.lead.create({
         data: {

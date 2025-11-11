@@ -12,6 +12,7 @@ import { OpenAIService } from '../ai/openai.service';
 import { AIService } from '../ai/ai.service';
 import { WidgetAuthService } from '../ai/widget-auth.service';
 import { PrismaService } from '../common/services/prisma.service';
+import { EncryptionService } from '../common/services/encryption.service';
 import { SettingsModule } from '../settings/settings.module';
 
 @Module({
@@ -28,6 +29,7 @@ import { SettingsModule } from '../settings/settings.module';
     AIService,
     WidgetAuthService,
     PrismaService,
+    EncryptionService,
   ],
   exports: [
     WhatsAppService,

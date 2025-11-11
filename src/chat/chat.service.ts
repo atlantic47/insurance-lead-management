@@ -87,11 +87,15 @@ export class ChatService {
     const context = getTenantContext();
     const tenantId = context?.tenantId;
 
+    if (!tenantId) {
+      throw new Error('Tenant context required to fetch conversation');
+    }
+
     return this.prisma.aIConversation.findFirst({
       where: { leadId },
       include: {
         chatMessages: {
-          where: tenantId ? { tenantId } : {}, // SECURITY FIX: Filter messages by tenant
+          where: { tenantId }, // SECURITY: Always filter messages by tenant
           orderBy: { createdAt: 'asc' },
         },
         lead: {
@@ -115,6 +119,10 @@ export class ChatService {
     const context = getTenantContext();
     const tenantId = context?.tenantId;
 
+    if (!tenantId) {
+      throw new Error('Tenant context required to fetch conversations');
+    }
+
     // CRITICAL SECURITY FIX: Filter conversations by tenant
     let where: any = { type: 'WHATSAPP_CHAT' };
     where = this.prisma.addTenantFilter(where);
@@ -127,7 +135,7 @@ export class ChatService {
         take: limit,
         include: {
           chatMessages: {
-            where: tenantId ? { tenantId } : {}, // SECURITY FIX: Filter messages by tenant
+            where: { tenantId }, // SECURITY: Always filter messages by tenant
             orderBy: { createdAt: 'asc' },
           },
         },

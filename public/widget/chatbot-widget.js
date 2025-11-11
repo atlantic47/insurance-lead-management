@@ -5,6 +5,7 @@
   let WIDGET_CONFIG = {
     apiBaseUrl: window.CHATBOT_CONFIG?.apiUrl || 'http://localhost:3001',
     widgetId: window.CHATBOT_CONFIG?.widgetId || 'default',
+    widgetToken: window.CHATBOT_CONFIG?.widgetToken || null,
     position: window.CHATBOT_CONFIG?.position || 'bottom-right',
     primaryColor: window.CHATBOT_CONFIG?.primaryColor || '#3B82F6',
     buttonText: window.CHATBOT_CONFIG?.buttonText || 'Chat with us',
@@ -288,6 +289,7 @@
           message: messageText,
           conversationId: conversationId,
           widgetId: WIDGET_CONFIG.widgetId,
+          widgetToken: WIDGET_CONFIG.widgetToken,
           url: window.location.href,
           domain: window.location.hostname,
           userInfo: userInfo.name || userInfo.email || userInfo.phone ? userInfo : undefined

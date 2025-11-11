@@ -8,6 +8,7 @@ import {
   Delete,
   Query,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -24,10 +25,12 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
 import { UserRole } from '@prisma/client';
+import { TenantContextInterceptor } from '../common/interceptors/tenant-context.interceptor';
 
 @ApiTags('Users')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
+@UseInterceptors(TenantContextInterceptor)
 @Controller('users')
 export class UsersController {
   constructor(private readonly usersService: UsersService) {}

@@ -24,6 +24,7 @@ import { SettingsModule } from './settings/settings.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { TenantsModule } from './tenants/tenants.module';
 import { PaymentsModule } from './payments/payments.module';
+import { CredentialsModule } from './credentials/credentials.module';
 import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
 import { RolesGuard } from './auth/guards/roles.guard';
 import { TenantGuard } from './auth/guards/tenant.guard';
@@ -71,6 +72,7 @@ import { WebhookTenantMiddleware } from './common/middleware/webhook-tenant.midd
     NotificationsModule,
     TenantsModule,
     PaymentsModule,
+    CredentialsModule,
   ],
   controllers: [AppController],
   providers: [
@@ -103,18 +105,22 @@ import { WebhookTenantMiddleware } from './common/middleware/webhook-tenant.midd
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
     // SECURITY FIX: Apply webhook tenant middleware to public webhook endpoints FIRST
-    // This extracts and validates tenant context from URL parameters for webhooks
+    // This extracts and validates tenant context from credential ID for webhooks
     consumer
       .apply(WebhookTenantMiddleware)
       .forRoutes(
-        { path: 'whatsapp/webhook/:tenantId', method: RequestMethod.ALL },
+        { path: 'whatsapp/webhook/:credentialId', method: RequestMethod.ALL },
         { path: 'email/webhook/:tenantId', method: RequestMethod.ALL }
       );
 
-    // Apply regular tenant middleware to all other routes
+    // Apply regular tenant middleware to all other routes EXCEPT webhooks
     // This extracts tenant context from authenticated user (JWT)
     consumer
       .apply(TenantMiddleware)
+      .exclude(
+        { path: 'whatsapp/webhook/:credentialId', method: RequestMethod.ALL },
+        { path: 'email/webhook/:tenantId', method: RequestMethod.ALL }
+      )
       .forRoutes('*');
   }
 }

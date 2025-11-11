@@ -10,12 +10,20 @@ import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UserQueryDto } from './dto/user-query.dto';
 import { PaginationResult } from '../common/dto/pagination.dto';
+import { getTenantContext } from '../common/context/tenant-context';
 
 @Injectable()
 export class UsersService {
   constructor(private prisma: PrismaService) {}
 
   async create(createUserDto: CreateUserDto) {
+    const context = getTenantContext();
+    const tenantId = context?.tenantId;
+
+    if (!tenantId) {
+      throw new BadRequestException('Tenant context required to create user');
+    }
+
     const existingUser = await this.prisma.user.findUnique({
       where: { email: createUserDto.email },
     });
@@ -27,10 +35,10 @@ export class UsersService {
     const hashedPassword = await bcrypt.hash(createUserDto.password, 12);
 
     return this.prisma.user.create({
-      // @ts-ignore - tenantId added by Prisma middleware
       data: {
         ...createUserDto,
         password: hashedPassword,
+        tenantId, // EXPLICIT tenantId
       },
       select: {
         id: true,
@@ -50,7 +58,15 @@ export class UsersService {
     const { page, limit, search, sortBy, sortOrder, role, isActive } = queryDto;
     const skip = (page - 1) * limit;
 
-    const where: any = {};
+    // CRITICAL: Filter by tenant
+    const context = getTenantContext();
+    const tenantId = context?.tenantId;
+
+    if (!tenantId) {
+      throw new BadRequestException('Tenant context required');
+    }
+
+    const where: any = { tenantId }; // TENANT FILTER
 
     // Search filter
     if (search) {

@@ -21,8 +21,10 @@ export class AppController {
     message: string;
     conversationId: string;
     widgetId?: string;
+    widgetToken?: string;
     url?: string;
     domain?: string;
+    userInfo?: { name?: string; email?: string; phone?: string };
   }) {
     try {
       // Use the AI service to handle the widget chat
@@ -30,8 +32,10 @@ export class AppController {
         body.message,
         body.conversationId,
         body.widgetId,
+        body.widgetToken,
         body.url,
-        body.domain
+        body.domain,
+        body.userInfo
       );
     } catch (error) {
       console.error('Widget chat error:', error);

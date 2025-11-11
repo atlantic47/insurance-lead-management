@@ -1,5 +1,6 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../common/services/prisma.service';
+import { getTenantContext } from '../common/context/tenant-context';
 import { CreateContactGroupDto } from './dto/create-contact-group.dto';
 import { UpdateContactGroupDto } from './dto/update-contact-group.dto';
 import { AddLeadsToGroupDto } from './dto/add-leads-to-group.dto';
@@ -11,11 +12,23 @@ export class ContactGroupsService {
   async create(createDto: CreateContactGroupDto, userId: string) {
     const { leadIds, ...groupData } = createDto;
 
+    // Get tenant context
+    const context = getTenantContext();
+    const tenantId = context?.tenantId;
+
+    if (!tenantId) {
+      throw new BadRequestException('Tenant context required');
+    }
+
     const group = await this.prisma.contactGroup.create({
-      // @ts-ignore - tenantId added by Prisma middleware
       data: {
         ...groupData,
-        createdById: userId,
+        createdBy: {
+          connect: { id: userId },
+        },
+        tenant: {
+          connect: { id: tenantId },
+        },
         ...(leadIds && leadIds.length > 0
           ? {
               leads: {

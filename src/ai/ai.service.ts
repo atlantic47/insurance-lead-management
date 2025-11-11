@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException, UnauthorizedException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, UnauthorizedException, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../common/services/prisma.service';
 import { OpenAIService } from './openai.service';
@@ -9,11 +9,13 @@ import * as fs from 'fs';
 import * as path from 'path';
 import axios from 'axios';
 import * as cheerio from 'cheerio';
-import * as pdfParse from 'pdf-parse';
+import pdfParse from 'pdf-parse';
 import * as XLSX from 'xlsx';
 
 @Injectable()
 export class AIService {
+  private readonly logger = new Logger(AIService.name);
+
   constructor(
     private prisma: PrismaService,
     private configService: ConfigService,
@@ -22,23 +24,33 @@ export class AIService {
   ) {}
 
   async generateAutoResponse(leadId: string, input: string) {
-    const lead = await this.prisma.lead.findUnique({ where: { id: leadId } });
-    
+    // SECURITY: Validate tenant access to lead
+    const lead = await this.prisma.lead.findFirst({
+      where: this.prisma.addTenantFilter({ id: leadId })
+    });
+
     if (!lead) {
-      throw new NotFoundException('Lead not found');
+      throw new NotFoundException('Lead not found or access denied');
     }
 
     // Placeholder AI integration - replace with actual AI service
     const mockResponse = this.generateMockResponse(input, lead);
 
+    const context = getTenantContext();
+    const tenantId = context?.tenantId;
+
+    if (!tenantId) {
+      throw new Error('Tenant context required to create auto response conversation');
+    }
+
     const aiConversation = await this.prisma.aIConversation.create({
-      // @ts-ignore - tenantId added by Prisma middleware
       data: {
         type: 'AUTO_RESPONSE',
         input,
         output: mockResponse,
         confidence: 0.85,
         leadId,
+        tenantId, // EXPLICIT tenantId
         metadata: {
           timestamp: new Date(),
           model: 'mock-ai-v1',
@@ -59,23 +71,33 @@ export class AIService {
   }
 
   async analyzeSentiment(leadId: string, text: string) {
-    const lead = await this.prisma.lead.findUnique({ where: { id: leadId } });
-    
+    // SECURITY: Validate tenant access to lead
+    const lead = await this.prisma.lead.findFirst({
+      where: this.prisma.addTenantFilter({ id: leadId })
+    });
+
     if (!lead) {
-      throw new NotFoundException('Lead not found');
+      throw new NotFoundException('Lead not found or access denied');
     }
 
     // Mock sentiment analysis - replace with actual AI service
     const sentiment = this.mockSentimentAnalysis(text);
 
+    const context = getTenantContext();
+    const tenantId = context?.tenantId;
+
+    if (!tenantId) {
+      throw new Error('Tenant context required to create sentiment analysis conversation');
+    }
+
     const aiConversation = await this.prisma.aIConversation.create({
-      // @ts-ignore - tenantId added by Prisma middleware
       data: {
         type: 'SENTIMENT_ANALYSIS',
         input: text,
         output: JSON.stringify(sentiment),
         confidence: sentiment.confidence,
         leadId,
+        tenantId, // EXPLICIT tenantId
         metadata: {
           timestamp: new Date(),
           analysis: sentiment,
@@ -91,9 +113,12 @@ export class AIService {
 
   async chatbotResponse(input: string, leadId?: string) {
     try {
-      // Get all processed training data
+      // Get all processed training data - TENANT FILTERED
+      let where: any = { status: 'processed' };
+      where = this.prisma.addTenantFilter(where);
+
       const trainingData = await this.prisma.aITrainingData.findMany({
-        where: { status: 'processed' },
+        where,
         select: { content: true, instructions: true, name: true },
         orderBy: { createdAt: 'desc' },
       });
@@ -108,10 +133,12 @@ export class AIService {
 
       console.log(`🤖 Chatbot - Found ${trainingData.length} training sources`);
 
-      // Get lead info if available
+      // Get lead info if available (TENANT-FILTERED)
       let customerName = 'Customer';
       if (leadId) {
-        const lead = await this.prisma.lead.findUnique({ where: { id: leadId } });
+        const lead = await this.prisma.lead.findFirst({
+          where: this.prisma.addTenantFilter({ id: leadId })
+        });
         if (lead) {
           customerName = `${lead.firstName} ${lead.lastName}`;
         }
@@ -125,14 +152,21 @@ export class AIService {
         context
       );
 
+      const chatbotContext = getTenantContext();
+      const chatbotTenantId = chatbotContext?.tenantId;
+
+      if (!chatbotTenantId) {
+        throw new Error('Tenant context required to create chatbot conversation');
+      }
+
       const aiConversation = await this.prisma.aIConversation.create({
-      // @ts-ignore - tenantId added by Prisma middleware
         data: {
           type: 'CHATBOT',
           input,
           output: aiResponse.response,
           confidence: aiResponse.confidence,
           leadId,
+          tenantId: chatbotTenantId, // EXPLICIT tenantId
           metadata: {
             timestamp: new Date(),
             channel: 'web-chat',
@@ -352,14 +386,22 @@ export class AIService {
         }
 
         // Save training data to database
+        // CRITICAL: Get tenantId from context and add explicitly
+        const context = getTenantContext();
+        const tenantId = context?.tenantId;
+
+        if (!tenantId) {
+          throw new BadRequestException('Tenant context required to upload training data');
+        }
+
         const trainingData = await this.prisma.aITrainingData.create({
-      // @ts-ignore - tenantId added by Prisma middleware
           data: {
             type: 'file',
             name: file.originalname,
             content,
             instructions,
             status: 'processing',
+            tenantId, // EXPLICIT tenantId
             metadata: {
               fileSize: file.size,
               fileType: file.mimetype,
@@ -422,14 +464,21 @@ export class AIService {
       }
 
       // Save training data to database
+      const context = getTenantContext();
+      const tenantId = context?.tenantId;
+
+      if (!tenantId) {
+        throw new BadRequestException('Tenant context required to save URL training data');
+      }
+
       const trainingData = await this.prisma.aITrainingData.create({
-      // @ts-ignore - tenantId added by Prisma middleware
         data: {
           type: 'url',
           name: url,
           content,
           instructions,
           status: 'processing',
+          tenantId, // EXPLICIT tenantId
           metadata: {
             url,
             scannedAt: new Date(),
@@ -500,14 +549,21 @@ export class AIService {
         : instructions;
 
       // Save training data to database
+      const context = getTenantContext();
+      const tenantId = context?.tenantId;
+
+      if (!tenantId) {
+        throw new BadRequestException('Tenant context required to submit training data');
+      }
+
       const trainingData = await this.prisma.aITrainingData.create({
-      // @ts-ignore - tenantId added by Prisma middleware
         data: {
           type: 'instructions',
           name: 'Training Instructions',
           content: combinedContent,
           instructions,
           status: 'processing',
+          tenantId, // EXPLICIT tenantId
           metadata: {
             urls,
             submittedAt: new Date(),
@@ -532,9 +588,12 @@ export class AIService {
 
   async testAi(message: string) {
     try {
-      // Get all processed training data
+      // Get all processed training data - TENANT FILTERED
+      let where: any = { status: 'processed' };
+      where = this.prisma.addTenantFilter(where);
+
       const trainingData = await this.prisma.aITrainingData.findMany({
-        where: { status: 'processed' },
+        where,
         select: { content: true, instructions: true, name: true },
         orderBy: { createdAt: 'desc' },
       });
@@ -581,7 +640,12 @@ export class AIService {
   }
 
   async getTrainingData() {
+    // TENANT FILTERED
+    let where: any = {};
+    where = this.prisma.addTenantFilter(where);
+
     const data = await this.prisma.aITrainingData.findMany({
+      where,
       orderBy: { createdAt: 'desc' },
       select: {
         id: true,
@@ -599,6 +663,15 @@ export class AIService {
 
   async deleteTrainingData(id: string) {
     try {
+      // TENANT FILTERED - Only delete if belongs to tenant
+      let where: any = { id };
+      where = this.prisma.addTenantFilter(where);
+
+      const trainingData = await this.prisma.aITrainingData.findFirst({ where });
+      if (!trainingData) {
+        throw new NotFoundException('Training data not found');
+      }
+
       await this.prisma.aITrainingData.delete({
         where: { id },
       });
@@ -608,15 +681,49 @@ export class AIService {
     }
   }
 
+  async updateTrainingData(id: string, instructions: string) {
+    try {
+      // TENANT FILTERED - Only update if belongs to tenant
+      let where: any = { id };
+      where = this.prisma.addTenantFilter(where);
+
+      const trainingData = await this.prisma.aITrainingData.findFirst({ where });
+      if (!trainingData) {
+        throw new NotFoundException('Training data not found');
+      }
+
+      // Update the instructions
+      const updated = await this.prisma.aITrainingData.update({
+        where: { id },
+        data: {
+          instructions,
+          updatedAt: new Date(),
+        },
+      });
+
+      this.logger.log(`✏️ Updated training data ${id} with new instructions`);
+      return {
+        message: 'Training data updated successfully',
+        data: updated,
+      };
+    } catch (error) {
+      this.logger.error(`Failed to update training data ${id}:`, error);
+      throw new NotFoundException('Training data not found');
+    }
+  }
+
   async reprocessPdfTrainingData() {
     try {
-      // Find PDF training data that might need reprocessing
+      // Find PDF training data that might need reprocessing - TENANT FILTERED
+      let where: any = {
+        type: 'file',
+        name: { contains: '.pdf' },
+        content: { contains: 'PDF content extraction not implemented yet' }
+      };
+      where = this.prisma.addTenantFilter(where);
+
       const pdfData = await this.prisma.aITrainingData.findMany({
-        where: {
-          type: 'file',
-          name: { contains: '.pdf' },
-          content: { contains: 'PDF content extraction not implemented yet' }
-        }
+        where
       });
 
       console.log(`Found ${pdfData.length} PDF files that need reprocessing`);
@@ -666,9 +773,10 @@ export class AIService {
     return tenantContext.run({ tenantId, userId: 'widget-system', isSuperAdmin: false }, async () => {
       try {
         // Get or create AI conversation record
+        // Query by metadata JSON field - use the correct Prisma JSON query syntax
         let where: any = {
           metadata: {
-            path: ['conversationId'] as any,
+            path: 'conversationId',
             equals: conversationId,
           },
         };
@@ -679,7 +787,7 @@ export class AIService {
           include: {
             chatMessages: {
               orderBy: { createdAt: 'asc' },
-              take: 10, // Last 10 messages for context
+              take: 20, // Last 20 messages for better context (10 exchanges)
             },
             lead: true,
           },
@@ -711,15 +819,22 @@ export class AIService {
 
         // Create conversation if it doesn't exist
         if (!conversation) {
-          // SECURITY: tenantId already set in context from verified widget token
+          // SECURITY: tenantId from verified widget token context
+          const context = getTenantContext();
+          const contextTenantId = context?.tenantId;
+
+          if (!contextTenantId) {
+            throw new Error('Tenant context required to create conversation');
+          }
+
           const newConv = await this.prisma.aIConversation.create({
-            // @ts-ignore - tenantId added by Prisma middleware from context
             data: {
               type: 'WIDGET_CHAT',
               input: message,
               output: '',
               confidence: 0,
-              lead: leadId ? { connect: { id: leadId } } : undefined,
+              tenantId: contextTenantId, // EXPLICIT tenantId
+              leadId: leadId || undefined, // Direct field assignment
               metadata: {
                 conversationId,
                 widgetId: widgetId || 'default',
@@ -759,14 +874,21 @@ export class AIService {
         // Check if conversation is already escalated
         if (conversation.isEscalated) {
           // Save customer message
+          const escalatedMsgContext = getTenantContext();
+          const escalatedMsgTenantId = escalatedMsgContext?.tenantId;
+
+          if (!escalatedMsgTenantId) {
+            throw new Error('Tenant context required to create chat message');
+          }
+
           await this.prisma.chatMessage.create({
-        // @ts-ignore - tenantId added by Prisma middleware
             data: {
               content: message,
               sender: 'CUSTOMER',
               platform: 'WEBSITE',
               conversationId: conversation.id,
               leadId: leadId,
+              tenantId: escalatedMsgTenantId, // EXPLICIT tenantId
               metadata: { url, domain },
             },
           });
@@ -785,27 +907,37 @@ export class AIService {
         }
 
         // Save customer message
+        const customerMsgContext = getTenantContext();
+        const customerMsgTenantId = customerMsgContext?.tenantId;
+
+        if (!customerMsgTenantId) {
+          throw new Error('Tenant context required to create chat message');
+        }
+
         await this.prisma.chatMessage.create({
-        // @ts-ignore - tenantId added by Prisma middleware
           data: {
             content: message,
             sender: 'CUSTOMER',
             platform: 'WEBSITE',
             conversationId: conversation.id,
             leadId: leadId,
+            tenantId: customerMsgTenantId, // EXPLICIT tenantId
             metadata: { url, domain, kycExtracted: kycInfo.hasPersonalInfo },
           },
         });
 
-        // Get training data for context
+        // Get training data for context - TENANT FILTERED
+        let trainingWhere: any = { status: 'processed' };
+        trainingWhere = this.prisma.addTenantFilter(trainingWhere);
+
         const trainingData = await this.prisma.aITrainingData.findMany({
-          where: { status: 'processed' },
+          where: trainingWhere,
           select: { content: true, instructions: true, name: true },
           orderBy: { createdAt: 'desc' },
         });
 
         // Build context from training data
-        const context = trainingData.length > 0
+        const aiContext = trainingData.length > 0
           ? `KNOWLEDGE BASE (${trainingData.length} sources):\n\n` +
             trainingData.map((data, index) =>
               `=== SOURCE ${index + 1}: ${data.name || 'Training Data'} ===\n${data.content}`
@@ -820,7 +952,7 @@ export class AIService {
           message,
           kycInfo.firstName || (conversation as any).lead?.firstName || 'Customer',
           conversationHistory,
-          context
+          aiContext
         );
 
         // Check if we should escalate
@@ -828,14 +960,21 @@ export class AIService {
         const needsUserInfo = shouldEscalate && !kycInfo.hasPersonalInfo;
 
         // Save AI response message
+        const aiMsgContext = getTenantContext();
+        const aiMsgTenantId = aiMsgContext?.tenantId;
+
+        if (!aiMsgTenantId) {
+          throw new Error('Tenant context required to create AI response message');
+        }
+
         await this.prisma.chatMessage.create({
-        // @ts-ignore - tenantId added by Prisma middleware
           data: {
             content: response.response,
             sender: 'AI_ASSISTANT',
             platform: 'WEBSITE',
             conversationId: conversation.id,
             leadId: leadId,
+            tenantId: aiMsgTenantId, // EXPLICIT tenantId
             metadata: {
               confidence: response.confidence,
               intent: response.intent,
@@ -870,7 +1009,10 @@ export class AIService {
           alreadyEscalated: false,
         };
       } catch (error) {
-        console.error('Widget chat error:', error);
+        console.error('❌ Widget chat error:', error);
+        console.error('❌ Error stack:', error.stack);
+        console.error('❌ Error message:', error.message);
+        console.error('❌ Error name:', error.name);
         return {
           response: 'I apologize, but I encountered an error. Please try again.',
           shouldEscalate: true,
@@ -901,37 +1043,36 @@ export class AIService {
         86400 * 30 // 30 days TTL
       );
 
-      // Try to get saved widget config from database
+      // Try to get saved widget config from database - TENANT FILTERED
+      let configWhere: any = {
+        type: 'widget_config',
+        name: `widget_${widgetId}`,
+      };
+      configWhere = this.prisma.addTenantFilter(configWhere);
+
       const savedConfig = await this.prisma.aITrainingData.findFirst({
-        where: {
-          type: 'widget_config',
-          name: `widget_${widgetId}`,
-        },
+        where: configWhere,
         orderBy: { createdAt: 'desc' },
       });
 
-      if (savedConfig && savedConfig.metadata) {
-        const config = savedConfig.metadata as any;
-        return {
-          widgetId,
-          widgetToken, // CRITICAL: Include signed token
-          title: config.title || 'Insurance Assistant',
-          greeting: config.greeting || 'Hi! How can I help you with insurance today?',
-          theme: config.theme || 'blue',
-          themeColor: config.themeColor || '#0052cc',
-          position: config.position || 'bottom-right',
-          profileIcon: config.profileIcon || 'default',
-          apiUrl: process.env.APP_URL || 'http://localhost:3001',
-          allowedDomains: ['*'],
-        };
-      }
+      // Return config with token (either saved config or defaults)
+      const config = savedConfig?.metadata as any;
+      return {
+        widgetId,
+        widgetToken, // CRITICAL: Include signed token
+        title: config?.title || 'Insurance Assistant',
+        greeting: config?.greeting || 'Hi! How can I help you with insurance today?',
+        theme: config?.theme || 'blue',
+        themeColor: config?.themeColor || '#0052cc',
+        position: config?.position || 'bottom-right',
+        profileIcon: config?.profileIcon || 'default',
+        apiUrl: process.env.APP_URL || 'http://localhost:3001',
+        allowedDomains: ['*'],
+      };
     } catch (error) {
       console.error('Error getting widget config:', error);
       throw error;
     }
-
-    // This shouldn't be reached, but TypeScript needs it
-    throw new Error('Failed to generate widget config');
   }
 
   async saveWidgetConfig(config: {
@@ -966,12 +1107,15 @@ export class AIService {
         savedAt: new Date(),
       };
 
-      // Check if widget configuration already exists
+      // Check if widget configuration already exists - TENANT FILTERED
+      let existingWhere: any = {
+        type: 'widget_config',
+        name: `widget_${widgetId}`,
+      };
+      existingWhere = this.prisma.addTenantFilter(existingWhere);
+
       const existingConfig = await this.prisma.aITrainingData.findFirst({
-        where: {
-          type: 'widget_config',
-          name: `widget_${widgetId}`,
-        },
+        where: existingWhere,
       });
 
       if (existingConfig) {
@@ -985,14 +1129,21 @@ export class AIService {
         });
       } else {
         // Create new configuration
+        const context = getTenantContext();
+        const tenantId = context?.tenantId;
+
+        if (!tenantId) {
+          throw new BadRequestException('Tenant context required to save widget configuration');
+        }
+
         await this.prisma.aITrainingData.create({
-      // @ts-ignore - tenantId added by Prisma middleware
           data: {
             type: 'widget_config',
             name: `widget_${widgetId}`,
             content: `Widget configuration for ${widgetId}`,
             instructions: 'Widget display settings',
             status: 'processed',
+            tenantId, // EXPLICIT tenantId
             metadata: configData,
           },
         });
@@ -1019,6 +1170,10 @@ export class AIService {
     const context = getTenantContext();
     const tenantId = context?.tenantId;
 
+    if (!tenantId) {
+      throw new BadRequestException('Tenant context required to fetch conversations');
+    }
+
     const [conversations, total] = await Promise.all([
       this.prisma.aIConversation.findMany({
         where,
@@ -1026,7 +1181,7 @@ export class AIService {
         take: limit,
         include: {
           chatMessages: {
-            where: tenantId ? { tenantId } : {}, // SECURITY FIX: Filter messages by tenant
+            where: { tenantId }, // SECURITY: Always filter messages by tenant
             orderBy: { createdAt: 'asc' },
           },
           lead: {
@@ -1167,13 +1322,27 @@ export class AIService {
       throw new NotFoundException('Conversation not found');
     }
 
-    // Get the user info for agent name
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
+    // Get the user info for agent name - MUST be from same tenant
+    const context = getTenantContext();
+    const tenantId = context?.tenantId;
+
+    if (!tenantId) {
+      throw new BadRequestException('Tenant context required');
+    }
+
+    const user = await this.prisma.user.findFirst({
+      where: {
+        id: userId,
+        tenantId: tenantId, // SECURITY: Only users from same tenant
+      },
       select: { firstName: true, lastName: true },
     });
 
-    const agentName = user ? `${user.firstName} ${user.lastName}` : 'Agent';
+    if (!user) {
+      throw new NotFoundException('User not found or does not belong to your organization');
+    }
+
+    const agentName = `${user.firstName} ${user.lastName}`;
 
     // Escalate the conversation
     await this.prisma.aIConversation.update({
@@ -1187,13 +1356,13 @@ export class AIService {
 
     // Create a system message with agent name
     await this.prisma.chatMessage.create({
-      // @ts-ignore - tenantId added by Prisma middleware
       data: {
         content: `🤝 This conversation has been transferred to ${agentName}. A human agent will assist you shortly.`,
         sender: 'AI_ASSISTANT',
         platform: 'WEBSITE',
         conversationId: conversationId,
         leadId: conversation.leadId,
+        tenantId, // EXPLICIT tenantId
         metadata: {
           system: true,
           handover: true,
@@ -1228,14 +1397,21 @@ export class AIService {
     }
 
     // Save human agent message
+    const context = getTenantContext();
+    const tenantId = context?.tenantId;
+
+    if (!tenantId) {
+      throw new BadRequestException('Tenant context required');
+    }
+
     await this.prisma.chatMessage.create({
-      // @ts-ignore - tenantId added by Prisma middleware
       data: {
         content: message,
         sender: 'HUMAN_AGENT',
         platform: 'WEBSITE',
         conversationId: conversationId,
         leadId: conversation.leadId,
+        tenantId, // EXPLICIT tenantId
         metadata: {
           agentId: user.id,
           agentName: `${user.firstName} ${user.lastName}`,
@@ -1254,11 +1430,12 @@ export class AIService {
     try {
       // Process the content by cleaning and formatting it for OpenAI
       const processedContent = this.cleanAndFormatContent(content, instructions);
-      
+
       // Update the training data with processed content and status
+      // Note: This update uses the ID which already has tenant context from creation
       await this.prisma.aITrainingData.update({
         where: { id },
-        data: { 
+        data: {
           content: processedContent, // Store the processed version
           status: 'processed',
           processedAt: new Date(),
@@ -1269,14 +1446,15 @@ export class AIService {
           }
         },
       });
-      
-      console.log(`Training data ${id} processed successfully - ${processedContent.length} characters`);
+
+      console.log(`✅ Training data ${id} processed successfully - ${processedContent.length} characters`);
     } catch (error) {
-      console.error(`Error processing training data ${id}:`, error);
-      
+      console.error(`❌ Error processing training data ${id}:`, error);
+
+      // Update with error status - uses ID which has tenant context
       await this.prisma.aITrainingData.update({
         where: { id },
-        data: { 
+        data: {
           status: 'error',
           error: error.message,
         },
@@ -1399,25 +1577,25 @@ Return JSON format:
     domain?: string
   ) {
     try {
-      // Try to find existing lead by email or phone
+      // Try to find existing lead by email or phone (TENANT-FILTERED)
       let existingLead: any = null;
       if (kycInfo.email) {
         existingLead = await this.prisma.lead.findFirst({
-          where: { email: kycInfo.email }
+          where: this.prisma.addTenantFilter({ email: kycInfo.email })
         });
       }
       
       if (!existingLead && kycInfo.phone) {
         const cleanPhone = kycInfo.phone.replace(/\D/g, '');
         existingLead = await this.prisma.lead.findFirst({
-          where: { 
+          where: this.prisma.addTenantFilter({
             OR: [
               { phone: cleanPhone },
               { phone: kycInfo.phone },
               { alternatePhone: cleanPhone },
               { alternatePhone: kycInfo.phone },
             ]
-          }
+          })
         });
       }
 
@@ -1456,7 +1634,11 @@ Return JSON format:
         const cleanPhone = kycInfo.phone ? kycInfo.phone.replace(/\D/g, '') : null;
 
         const context = getTenantContext();
-        const tenantId = context?.tenantId || 'default-tenant-000';
+        const tenantId = context?.tenantId;
+
+        if (!tenantId) {
+          throw new Error('Tenant context required to create lead from widget chat');
+        }
 
         return await this.prisma.lead.create({
           data: {

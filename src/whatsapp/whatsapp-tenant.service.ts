@@ -1,12 +1,16 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../common/services/prisma.service';
+import { EncryptionService } from '../common/services/encryption.service';
 import * as crypto from 'crypto';
 
 @Injectable()
 export class WhatsAppTenantService {
   private readonly logger = new Logger(WhatsAppTenantService.name);
 
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private encryptionService: EncryptionService,
+  ) {}
 
   async getTenantCredentials(tenantId: string) {
     const tenant = await this.prisma.tenant.findUnique({
@@ -51,7 +55,26 @@ export class WhatsAppTenantService {
 
   async getAccessToken(tenantId: string): Promise<string | null> {
     const credentials = await this.getTenantCredentials(tenantId);
-    return credentials?.accessToken || null;
+    const storedToken = credentials?.accessToken;
+
+    if (!storedToken) {
+      return null;
+    }
+
+    // Check if the token is encrypted using the EncryptionService's isEncrypted method
+    if (this.encryptionService.isEncrypted(storedToken)) {
+      try {
+        this.logger.log('Decrypting WhatsApp access token');
+        return this.encryptionService.decrypt(storedToken);
+      } catch (error) {
+        this.logger.error(`Failed to decrypt WhatsApp access token for tenant ${tenantId}:`, error.message);
+        return null;
+      }
+    }
+
+    // Token is not encrypted, return as-is
+    this.logger.log('Using plain text WhatsApp access token');
+    return storedToken;
   }
 
   async getPhoneNumberId(tenantId: string): Promise<string | null> {

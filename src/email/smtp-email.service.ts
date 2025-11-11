@@ -16,31 +16,35 @@ export class SmtpEmailService {
 
   private async createTransporter(tenantId: string): Promise<nodemailer.Transporter | null> {
     try {
-      const tenant = await this.prisma.tenant.findUnique({
-        where: { id: tenantId },
-        select: { settings: true },
+      // Get default email credential for this tenant
+      const emailCred = await this.prisma.emailCredential.findFirst({
+        where: {
+          tenantId,
+          isActive: true,
+          isDefault: true,
+        },
       });
 
-      if (!tenant || !tenant.settings) {
-        this.logger.warn(`No tenant settings found for tenant ${tenantId}`);
-        return null;
-      }
+      // If no default, get any active credential
+      const credential = emailCred || await this.prisma.emailCredential.findFirst({
+        where: {
+          tenantId,
+          isActive: true,
+        },
+      });
 
-      const settings = tenant.settings as any;
-      const emailCreds = settings.credentials?.email;
-
-      if (!emailCreds || !emailCreds.smtpHost || !emailCreds.smtpUser || !emailCreds.smtpPass) {
-        this.logger.warn(`Incomplete SMTP credentials for tenant ${tenantId}`);
+      if (!credential) {
+        this.logger.warn(`No active email credentials found for tenant ${tenantId}`);
         return null;
       }
 
       const transporter = nodemailer.createTransport({
-        host: emailCreds.smtpHost,
-        port: parseInt(emailCreds.smtpPort || '465'),
-        secure: emailCreds.smtpSecure !== 'false',
+        host: credential.host,
+        port: credential.port,
+        secure: credential.secure,
         auth: {
-          user: emailCreds.smtpUser,
-          pass: emailCreds.smtpPass,
+          user: credential.user,
+          pass: credential.pass, // Note: Should be decrypted if encrypted
         },
         tls: {
           rejectUnauthorized: false,
@@ -48,6 +52,7 @@ export class SmtpEmailService {
       });
 
       this.transporters.set(tenantId, transporter);
+      this.logger.log(`Created email transporter for tenant ${tenantId} using ${credential.name}`);
       return transporter;
     } catch (error) {
       this.logger.error(`Error creating transporter for tenant ${tenantId}:`, error);
@@ -93,15 +98,23 @@ export class SmtpEmailService {
         throw new Error('Unable to create email transporter for tenant');
       }
 
-      // Get tenant email settings for "from" address
-      const tenant = await this.prisma.tenant.findUnique({
-        where: { id: tenantId },
-        select: { settings: true },
+      // Get default email credential for "from" address
+      const emailCred = await this.prisma.emailCredential.findFirst({
+        where: {
+          tenantId,
+          isActive: true,
+          isDefault: true,
+        },
       });
 
-      const settings = tenant?.settings as any;
-      const emailCreds = settings?.credentials?.email;
-      const smtpFrom = emailCreds?.smtpFrom || emailCreds?.smtpUser || 'noreply@insurance.com';
+      const credential = emailCred || await this.prisma.emailCredential.findFirst({
+        where: {
+          tenantId,
+          isActive: true,
+        },
+      });
+
+      const smtpFrom = credential?.fromEmail || credential?.user || 'noreply@insurance.com';
 
       const mailOptions = {
         from: emailData.from || smtpFrom,

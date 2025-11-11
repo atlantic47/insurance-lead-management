@@ -123,6 +123,17 @@ export class AIController {
 
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
+  @Put('training/data/:id')
+  @ApiOperation({ summary: 'Update training data instructions' })
+  async updateTrainingData(
+    @Param('id') id: string,
+    @Body() updateDto: { instructions: string },
+  ) {
+    return this.aiService.updateTrainingData(id, updateDto.instructions);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
   @Post('training/reprocess-pdfs')
   @ApiOperation({ summary: 'Check for PDFs that need reprocessing' })
   async reprocessPdfs() {
@@ -147,8 +158,9 @@ export class AIController {
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @Get('widget/config/settings')
-  @ApiOperation({ summary: 'Get current widget configuration' })
+  @ApiOperation({ summary: 'Get current widget configuration with token for setup page' })
   async getCurrentWidgetConfig() {
+    // This endpoint is for authenticated users to get their widget setup
     return this.aiService.getWidgetConfig('default');
   }
 
@@ -220,9 +232,9 @@ export class AIController {
     return this.aiService.sendWidgetMessage(conversationId, data.message, user);
   }
 
-  @Public()
+  @UseGuards(JwtAuthGuard)
   @Get('widget/config/:widgetId')
-  @ApiOperation({ summary: 'Get widget configuration' })
+  @ApiOperation({ summary: 'Get widget configuration (requires authentication)' })
   async getWidgetConfig(@Param('widgetId') widgetId: string) {
     return this.aiService.getWidgetConfig(widgetId);
   }
