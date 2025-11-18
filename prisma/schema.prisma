@@ -111,6 +111,10 @@ model Tenant {
   aiTrainingData     AITrainingData[]
   emailCredentials   EmailCredential[]
   whatsappCredentials WhatsAppCredential[]
+  whatsappTemplates  WhatsAppTemplate[]
+  whatsappConversationLabels WhatsAppConversationLabel[]
+  whatsappAutomationRules WhatsAppAutomationRule[]
+  whatsappCampaigns WhatsAppCampaign[]
 
   @@map("tenants")
 }
@@ -151,8 +155,8 @@ model WhatsAppCredential {
   phoneNumber         String   // Display phone number (e.g., "+1234567890")
   phoneNumberId       String   // Meta Phone Number ID
   businessAccountId   String   // Meta Business Account ID
-  accessToken         String   // Encrypted access token
-  appSecret           String?  // Encrypted app secret for webhook validation
+  accessToken         String   @db.Text // Encrypted access token (using TEXT to support long tokens)
+  appSecret           String?  @db.Text // Encrypted app secret for webhook validation
   webhookVerifyToken  String   // Webhook verification token (auto-generated on create)
   webhookUrl          String   // Unique webhook URL for this credential (auto-generated on create)
 
@@ -166,6 +170,241 @@ model WhatsAppCredential {
   @@index([tenantId])
   @@index([tenantId, isDefault])
   @@index([phoneNumberId])
+}
+
+model WhatsAppTemplate {
+  id                String   @id @default(uuid())
+  tenantId          String
+  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdById       String
+  createdBy         User     @relation(fields: [createdById], references: [id])
+
+  name              String   // Template name (lowercase_with_underscores)
+  category          String   // MARKETING, UTILITY, AUTHENTICATION
+  language          String   // Language code (e.g., "en", "en_US")
+
+  headerFormat      String?  // TEXT, IMAGE, VIDEO, DOCUMENT
+  headerText        String?  @db.Text
+  body              String   @db.Text
+  footer            String?  @db.Text
+  buttons           String?  @db.Text // JSON array of buttons
+
+  metaPayload       String   @db.Text // Full Meta API payload JSON
+  metaTemplateId    String?  // Meta's template ID after submission
+  status            String   @default("DRAFT") // DRAFT, PENDING, APPROVED, REJECTED
+  rejectionReason   String?  @db.Text
+
+  submittedAt       DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  // Relations
+  automationRules   WhatsAppAutomationRule[]
+  campaigns         WhatsAppCampaign[]
+
+  @@map("whatsapp_templates")
+  @@index([tenantId])
+  @@index([createdById])
+  @@index([tenantId, status])
+  @@index([name, language])
+}
+
+// WhatsApp Conversation Labels
+model WhatsAppConversationLabel {
+  id                String   @id @default(uuid())
+  tenantId          String
+  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  name              String   // Label name
+  color             String   // Hex color code
+  description       String?  @db.Text
+  isSystemLabel     Boolean  @default(false) // System labels like "Auto Template"
+
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  // Relations
+  conversations     WhatsAppConversationLabelAssignment[]
+
+  @@unique([tenantId, name])
+  @@map("whatsapp_conversation_labels")
+  @@index([tenantId])
+}
+
+// Many-to-many relationship between conversations and labels
+model WhatsAppConversationLabelAssignment {
+  id                String   @id @default(uuid())
+  tenantId          String
+
+  conversationId    String
+  labelId           String
+  label             WhatsAppConversationLabel @relation(fields: [labelId], references: [id], onDelete: Cascade)
+
+  assignedById      String
+  assignedBy        User     @relation("WhatsAppLabelAssignments", fields: [assignedById], references: [id])
+  assignedAt        DateTime @default(now())
+
+  @@unique([conversationId, labelId])
+  @@map("whatsapp_conversation_label_assignments")
+  @@index([tenantId])
+  @@index([conversationId])
+  @@index([labelId])
+  @@index([assignedById])
+}
+
+// Template Automation Rules
+model WhatsAppAutomationRule {
+  id                String   @id @default(uuid())
+  tenantId          String
+  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdById       String
+  createdBy         User     @relation(fields: [createdById], references: [id])
+
+  name              String   // Rule name
+  description       String?  @db.Text
+  isActive          Boolean  @default(true)
+
+  // Trigger configuration
+  triggerType       String   // CONVERSATION_WINDOW_EXPIRED, LABEL_ASSIGNED, TIME_DELAY
+  triggerConditions String?  @db.Text // JSON conditions
+
+  // Template to send
+  templateId        String
+  template          WhatsAppTemplate @relation(fields: [templateId], references: [id])
+
+  // Template parameters mapping
+  templateParams    String?  @db.Text // JSON mapping for template variables
+
+  // Sending rules
+  sendingFrequency  String   // ONCE, EVERY_WINDOW, DAILY, WEEKLY
+  maxSendCount      Int?     // Maximum times to send (null = unlimited)
+
+  // Scheduling
+  sendAfterMinutes  Int      @default(0) // Delay after trigger
+  activeDays        String?  // JSON array of active days [0-6]
+  activeHoursStart  Int?     // 0-23
+  activeHoursEnd    Int?     // 0-23
+
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  // Relations
+  executionLogs     WhatsAppAutomationLog[]
+
+  @@map("whatsapp_automation_rules")
+  @@index([tenantId])
+  @@index([templateId])
+  @@index([isActive])
+}
+
+// Automation execution tracking
+model WhatsAppAutomationLog {
+  id                String   @id @default(uuid())
+  tenantId          String
+
+  ruleId            String
+  rule              WhatsAppAutomationRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+
+  conversationId    String
+  phoneNumber       String
+
+  success           Boolean  @default(false)
+  status            String   @default("PENDING") // PENDING, SENT, FAILED, SKIPPED
+  errorMessage      String?  @db.Text
+  errorDetails      String?  @db.Text // JSON error details
+  messageId         String?  // WhatsApp message ID from Meta
+
+  executedAt        DateTime @default(now())
+  createdAt         DateTime @default(now())
+
+  @@map("whatsapp_automation_logs")
+  @@index([tenantId])
+  @@index([ruleId])
+  @@index([conversationId])
+  @@index([status])
+  @@index([success])
+}
+
+// WhatsApp Marketing Campaigns
+model WhatsAppCampaign {
+  id                String   @id @default(uuid())
+  tenantId          String
+  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdById       String
+  createdBy         User     @relation(fields: [createdById], references: [id])
+
+  name              String
+  description       String?  @db.Text
+  status            String   @default("DRAFT") // DRAFT, SCHEDULED, RUNNING, PAUSED, COMPLETED, CANCELLED
+
+  // Template configuration
+  templateId        String
+  template          WhatsAppTemplate @relation(fields: [templateId], references: [id])
+  templateParams    String?  @db.Text // JSON mapping for template variables
+
+  // Target audience
+  targetType        String   // ALL_CONTACTS, CONTACT_GROUP, CUSTOM_FILTER, CSV_UPLOAD
+  targetGroupId     String?  // Reference to contact group if applicable
+  targetFilters     String?  @db.Text // JSON filters
+  contactsList      String?  @db.Text // JSON array of phone numbers for CSV upload
+
+  // Scheduling
+  scheduledAt       DateTime?
+  startedAt         DateTime?
+  completedAt       DateTime?
+
+  // Sending configuration
+  sendingSpeed      String   @default("NORMAL") // SLOW, NORMAL, FAST (messages per minute)
+  respectWorkingHours Boolean @default(true)
+  workingHoursStart Int?     // 0-23
+  workingHoursEnd   Int?     // 0-23
+
+  // Statistics
+  totalContacts     Int      @default(0)
+  sentCount         Int      @default(0)
+  deliveredCount    Int      @default(0)
+  readCount         Int      @default(0)
+  failedCount       Int      @default(0)
+
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  // Relations
+  messages          WhatsAppCampaignMessage[]
+
+  @@map("whatsapp_campaigns")
+  @@index([tenantId])
+  @@index([templateId])
+  @@index([status])
+  @@index([scheduledAt])
+}
+
+// Campaign message tracking
+model WhatsAppCampaignMessage {
+  id                String   @id @default(uuid())
+  tenantId          String
+
+  campaignId        String
+  campaign          WhatsAppCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  phoneNumber       String
+  contactName       String?
+
+  status            String   // PENDING, SENT, DELIVERED, READ, FAILED
+  metaMessageId     String?  // WhatsApp message ID from Meta
+  errorMessage      String?  @db.Text
+
+  sentAt            DateTime?
+  deliveredAt       DateTime?
+  readAt            DateTime?
+
+  createdAt         DateTime @default(now())
+
+  @@map("whatsapp_campaign_messages")
+  @@index([tenantId])
+  @@index([campaignId])
+  @@index([phoneNumber])
+  @@index([status])
 }
 
 // Core Models
@@ -199,6 +438,10 @@ model User {
   notifications     Notification[]
   assignedTickets   Ticket[]           @relation("AssignedTickets")
   createdTickets    Ticket[]           @relation("CreatedTickets")
+  whatsappTemplates WhatsAppTemplate[]
+  whatsappAutomationRules WhatsAppAutomationRule[]
+  whatsappCampaigns WhatsAppCampaign[]
+  whatsappLabelAssignments WhatsAppConversationLabelAssignment[] @relation("WhatsAppLabelAssignments")
 
   @@index([tenantId])
   @@map("users")
