@@ -13,17 +13,27 @@ export class WhatsAppTenantService {
   ) {}
 
   async getTenantCredentials(tenantId: string) {
-    const tenant = await this.prisma.tenant.findUnique({
-      where: { id: tenantId },
-      select: { settings: true },
+    // Get credentials from whatsapp_credentials table (not from tenant.settings)
+    const credential = await this.prisma.whatsAppCredential.findFirst({
+      where: {
+        tenantId,
+        isActive: true,
+        isDefault: true,
+      },
     });
 
-    if (!tenant || !tenant.settings) {
+    if (!credential) {
       return null;
     }
 
-    const settings = tenant.settings as any;
-    return settings.credentials?.whatsapp || null;
+    // Return in the format expected by existing code
+    return {
+      accessToken: credential.accessToken,
+      phoneNumberId: credential.phoneNumberId,
+      businessAccountId: credential.businessAccountId,
+      webhookVerifyToken: credential.webhookVerifyToken,
+      appSecret: credential.appSecret,
+    };
   }
 
   async verifyWebhookToken(tenantId: string, token: string): Promise<boolean> {
@@ -63,11 +73,21 @@ export class WhatsAppTenantService {
 
     // Check if the token is encrypted using the EncryptionService's isEncrypted method
     if (this.encryptionService.isEncrypted(storedToken)) {
+      // New encryption format (3 parts)
       try {
-        this.logger.log('Decrypting WhatsApp access token');
+        this.logger.log('Decrypting WhatsApp access token (new format)');
         return this.encryptionService.decrypt(storedToken);
       } catch (error) {
         this.logger.error(`Failed to decrypt WhatsApp access token for tenant ${tenantId}:`, error.message);
+        return null;
+      }
+    } else if (this.encryptionService.isOldEncryptionFormat(storedToken)) {
+      // Old encryption format (2 parts)
+      try {
+        this.logger.log('Decrypting WhatsApp access token (old format)');
+        return this.encryptionService.decryptOldFormat(storedToken);
+      } catch (error) {
+        this.logger.error(`Failed to decrypt WhatsApp access token with old format for tenant ${tenantId}:`, error.message);
         return null;
       }
     }

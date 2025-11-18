@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../common/services/prisma.service';
 import { LeadSource, LeadStatus, InsuranceType } from '@prisma/client';
 import { getTenantContext } from '../common/context/tenant-context';
+import { WhatsAppTenantService } from '../whatsapp/whatsapp-tenant.service';
 import OpenAI from 'openai';
 import { ConfigService } from '@nestjs/config';
 
@@ -12,6 +13,7 @@ export class ChatService {
   constructor(
     private prisma: PrismaService,
     private configService: ConfigService,
+    private whatsappTenantService: WhatsAppTenantService,
   ) {
     this.openai = new OpenAI({
       apiKey: this.configService.get<string>('OPENAI_API_KEY') || 'dummy-key',
@@ -354,13 +356,29 @@ Guidelines:
     }
   }
 
-  async sendWhatsAppMessage(phoneNumber: string, message: string) {
+  async sendWhatsAppMessage(phoneNumber: string, message: string, tenantId?: string) {
     try {
-      const accessToken = this.configService.get<string>('WHATSAPP_ACCESS_TOKEN');
-      const phoneNumberId = this.configService.get<string>('WHATSAPP_PHONE_NUMBER_ID');
-      
+      // Get tenant ID from context if not provided
+      if (!tenantId) {
+        const context = getTenantContext();
+        tenantId = context?.tenantId;
+      }
+
+      if (!tenantId) {
+        console.error('No tenant ID available for sending WhatsApp message');
+        return {
+          success: false,
+          error: 'No tenant ID available',
+          messageId: `wa_failed_${Date.now()}`,
+        };
+      }
+
+      // Get credentials from whatsapp_credentials table via WhatsAppTenantService
+      const accessToken = await this.whatsappTenantService.getAccessToken(tenantId);
+      const phoneNumberId = await this.whatsappTenantService.getPhoneNumberId(tenantId);
+
       if (!accessToken || !phoneNumberId) {
-        console.log(`[DEV MODE] Sending WhatsApp message to ${phoneNumber}: ${message}`);
+        console.log(`[DEV MODE] No WhatsApp credentials found for tenant ${tenantId}. Sending message to ${phoneNumber}: ${message}`);
         return {
           success: true,
           messageId: `wa_dev_${Date.now()}`,
@@ -385,7 +403,7 @@ Guidelines:
       });
 
       const result = await response.json();
-      
+
       if (response.ok) {
         console.log(`WhatsApp message sent successfully to ${phoneNumber}`);
         return {

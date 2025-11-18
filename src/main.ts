@@ -19,12 +19,26 @@ async function bootstrap() {
     optionsSuccessStatus: 204
   });
 
-  // Global validation pipe
+  // Global validation pipe with detailed error messages
   app.useGlobalPipes(
     new ValidationPipe({
       transform: true,
       whitelist: true,
-      forbidNonWhitelisted: true,
+      forbidNonWhitelisted: false, // Changed to false to allow extra fields (they'll be stripped by whitelist)
+      transformOptions: {
+        enableImplicitConversion: true, // Automatically convert types
+      },
+      exceptionFactory: (errors) => {
+        console.log('=== VALIDATION ERRORS ===');
+        console.log(JSON.stringify(errors, null, 2));
+        const messages = errors.map(error => ({
+          field: error.property,
+          constraints: error.constraints,
+          value: error.value,
+        }));
+        console.log('Formatted errors:', JSON.stringify(messages, null, 2));
+        return new ValidationPipe().createExceptionFactory()(errors);
+      },
     }),
   );
 

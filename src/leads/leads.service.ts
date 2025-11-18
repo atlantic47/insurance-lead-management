@@ -5,6 +5,7 @@ import {
   ForbiddenException,
   Inject,
   forwardRef,
+  Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../common/services/prisma.service';
 import { getTenantContext } from '../common/context/tenant-context';
@@ -17,6 +18,8 @@ import { NotificationsService } from '../notifications/notifications.service';
 
 @Injectable()
 export class LeadsService {
+  private readonly logger = new Logger(LeadsService.name);
+
   constructor(
     private prisma: PrismaService,
     @Inject(forwardRef(() => NotificationsService))
@@ -203,56 +206,68 @@ export class LeadsService {
   }
 
   async update(id: string, updateLeadDto: UpdateLeadDto, currentUser: any) {
-    const existingLead = await this.findOne(id, currentUser);
+    try {
+      this.logger.log(`Update request for lead: ${id}`);
+      this.logger.log(`Update data received: ${JSON.stringify(updateLeadDto, null, 2)}`);
 
-    if (
-      currentUser.role === UserRole.AGENT &&
-      existingLead.assignedUserId !== currentUser.id
-    ) {
-      throw new ForbiddenException('You can only update your own leads');
-    }
+      const existingLead = await this.findOne(id, currentUser);
 
-    const updateData: any = { ...updateLeadDto };
+      if (
+        currentUser.role === UserRole.AGENT &&
+        existingLead.assignedUserId !== currentUser.id
+      ) {
+        throw new ForbiddenException('You can only update your own leads');
+      }
 
-    if (updateLeadDto.status && updateLeadDto.status !== existingLead.status) {
-      updateData.lastContactedAt = new Date();
-    }
+      const updateData: any = { ...updateLeadDto };
 
-    // Check if lead is being assigned to a different user
-    const isReassigned = updateLeadDto.assignedUserId &&
-      updateLeadDto.assignedUserId !== existingLead.assignedUserId;
+      if (updateLeadDto.status && updateLeadDto.status !== existingLead.status) {
+        updateData.lastContactedAt = new Date();
+      }
 
-    const updatedLead = await this.prisma.lead.update({
-      where: { id },
-      data: updateData,
-      include: {
-        assignedUser: {
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            email: true,
+      // Check if lead is being assigned to a different user
+      const isReassigned = updateLeadDto.assignedUserId &&
+        updateLeadDto.assignedUserId !== existingLead.assignedUserId;
+
+      this.logger.log(`Updating lead with data: ${JSON.stringify(updateData, null, 2)}`);
+
+      const updatedLead = await this.prisma.lead.update({
+        where: { id },
+        data: updateData,
+        include: {
+          assignedUser: {
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+              email: true,
+            },
           },
         },
-      },
-    });
-
-    // Create notification if lead was assigned to someone
-    if (isReassigned && updatedLead.assignedUserId) {
-      await this.notificationsService.create({
-        userId: updatedLead.assignedUserId,
-        type: 'LEAD_ASSIGNED',
-        title: 'New Lead Assigned',
-        message: `You have been assigned a new lead: ${updatedLead.firstName} ${updatedLead.lastName}`,
-      // @ts-ignore - tenantId added by Prisma middleware
-        metadata: {
-          leadId: updatedLead.id,
-          leadName: `${updatedLead.firstName} ${updatedLead.lastName}`,
-        },
       });
-    }
 
-    return updatedLead;
+      // Create notification if lead was assigned to someone
+      if (isReassigned && updatedLead.assignedUserId) {
+        await this.notificationsService.create({
+          userId: updatedLead.assignedUserId,
+          type: 'LEAD_ASSIGNED',
+          title: 'New Lead Assigned',
+          message: `You have been assigned a new lead: ${updatedLead.firstName} ${updatedLead.lastName}`,
+        // @ts-ignore - tenantId added by Prisma middleware
+          metadata: {
+            leadId: updatedLead.id,
+            leadName: `${updatedLead.firstName} ${updatedLead.lastName}`,
+          },
+        });
+      }
+
+      this.logger.log(`Lead ${id} updated successfully`);
+      return updatedLead;
+    } catch (error) {
+      this.logger.error(`Error updating lead ${id}:`, error);
+      this.logger.error(`Error details: ${JSON.stringify(error, Object.getOwnPropertyNames(error))}`);
+      throw error;
+    }
   }
 
   async remove(id: string, currentUser: any) {

@@ -74,11 +74,13 @@ export class LeadsController {
   @ApiOperation({ summary: 'Update lead' })
   @ApiResponse({ status: 200, description: 'Lead updated successfully' })
   @ApiResponse({ status: 404, description: 'Lead not found' })
-  update(
+  async update(
     @Param('id') id: string,
     @Body() updateLeadDto: UpdateLeadDto,
     @CurrentUser() user: any,
   ) {
+    console.log('Controller received update request for lead:', id);
+    console.log('Raw body data:', JSON.stringify(updateLeadDto, null, 2));
     return this.leadsService.update(id, updateLeadDto, user);
   }
 

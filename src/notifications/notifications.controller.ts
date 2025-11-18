@@ -12,17 +12,17 @@ export class NotificationsController {
 
   @Get()
   async getNotifications(@Request() req) {
-    return this.notificationsService.findByUser(req.user.userId);
+    return this.notificationsService.findByUser(req.user.id);
   }
 
   @Get('unread')
   async getUnreadNotifications(@Request() req) {
-    return this.notificationsService.findByUser(req.user.userId, true);
+    return this.notificationsService.findByUser(req.user.id, true);
   }
 
   @Get('count')
   async getUnreadCount(@Request() req) {
-    const count = await this.notificationsService.getUnreadCount(req.user.userId);
+    const count = await this.notificationsService.getUnreadCount(req.user.id);
     return { count };
   }
 
@@ -33,7 +33,7 @@ export class NotificationsController {
 
   @Patch('mark-all-read')
   async markAllAsRead(@Request() req) {
-    return this.notificationsService.markAllAsRead(req.user.userId);
+    return this.notificationsService.markAllAsRead(req.user.id);
   }
 
   @Delete(':id')

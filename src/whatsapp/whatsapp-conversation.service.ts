@@ -76,14 +76,20 @@ export class WhatsAppConversationService {
       });
 
       // Check if conversation is escalated
+      this.logger.log(`📊 Conversation ${conversation.id} status: ${conversation.status}`);
+
       if (conversation.status === 'escalated') {
+        this.logger.log(`🚫 Conversation is ESCALATED - AI will NOT respond`);
         await this.handleEscalatedConversation(conversation, message);
         return;
       }
 
       // Generate AI response if conversation is active
       if (conversation.status === 'active') {
+        this.logger.log(`✅ Conversation is ACTIVE - AI will respond`);
         await this.generateAndSendAIResponse(conversation, message);
+      } else {
+        this.logger.log(`⏸️ Conversation status is '${conversation.status}' - AI will NOT respond`);
       }
 
     } catch (error) {
@@ -219,25 +225,17 @@ export class WhatsAppConversationService {
     conversation: WhatsAppConversation,
     message: WhatsAppMessage
   ): Promise<void> {
-    // For escalated conversations, just save the message and send an acknowledgment
-    const acknowledgment = 'Thank you for your message. Your conversation has been escalated to our team. An agent will respond during business hours.';
-    const tenantId = (conversation as any).tenantId;
-
-    await this.whatsappService.sendMessage(conversation.phoneNumber, acknowledgment, tenantId);
-    
-    await this.saveMessage({
-      conversationId: conversation.id,
-      messageId: `ack_${Date.now()}`,
-      content: acknowledgment,
-      direction: 'outbound',
-      messageType: 'text',
-      isFromAI: true,
-      timestamp: new Date(),
-    });
+    // For escalated conversations, just save the incoming message
+    // DO NOT send acknowledgments - the human agent will respond
+    // The customer already received an escalation message when the conversation was first escalated
+    this.logger.log(`Escalated conversation ${conversation.id} - message saved, waiting for human agent response`);
   }
 
   private async findConversationByPhoneNumber(phoneNumber: string): Promise<WhatsAppConversation | null> {
     try {
+      // Normalize phone number for comparison (remove + prefix if exists)
+      const normalizedPhone = phoneNumber.replace(/^\+/, '');
+
       // Find all WhatsApp conversations and filter by phone number
       let where: any = { type: 'WHATSAPP_CHAT' };
       where = this.prisma.addTenantFilter(where);
@@ -252,13 +250,31 @@ export class WhatsAppConversationService {
         }
       });
 
-      // Filter by phone number in the metadata
-      const conversation = conversations.find(conv => 
-        conv.metadata && 
-        typeof conv.metadata === 'object' && 
-        'phoneNumber' in conv.metadata && 
-        conv.metadata.phoneNumber === phoneNumber
-      );
+      // Filter by phone number in the metadata - find ALL matching conversations
+      const matchingConversations = conversations.filter(conv => {
+        const convPhone = conv.metadata?.['phoneNumber'] as string;
+        if (!convPhone) return false;
+
+        // Normalize both phone numbers for comparison
+        const normalizedConvPhone = convPhone.replace(/^\+/, '');
+        return normalizedConvPhone === normalizedPhone || convPhone === phoneNumber;
+      });
+
+      if (matchingConversations.length === 0) return null;
+
+      // IMPORTANT: Find the most recent NON-CLOSED conversation
+      // Prefer escalated conversations over active ones (don't create duplicates)
+      const activeConversations = matchingConversations.filter(conv => {
+        const status = conv.metadata?.['status'] as string;
+        return status !== 'closed';
+      });
+
+      const conversation = activeConversations[0]; // Most recent non-closed conversation
+
+      if (!conversation) return null;
+
+      const status = conversation.metadata?.['status'] as string;
+      this.logger.log(`Found ${matchingConversations.length} total conversation(s) for phone ${phoneNumber}, using most recent non-closed one: ${conversation.id} (status: ${status})`);
 
       if (!conversation) return null;
 
@@ -393,22 +409,27 @@ export class WhatsAppConversationService {
       const conversation = await this.prisma.aIConversation.findFirst({
         where
       });
-      
+
       if (conversation) {
-        const updatedMetadata = { 
-          ...conversation.metadata as any, 
-          status 
+        const currentStatus = (conversation.metadata as any)?.status;
+        this.logger.log(`🔄 Updating conversation ${conversationId} status: ${currentStatus} → ${status}`);
+
+        const updatedMetadata = {
+          ...conversation.metadata as any,
+          status
         };
-        
+
         await this.prisma.aIConversation.update({
           where: { id: conversationId },
           data: {
             metadata: updatedMetadata
           }
         });
+
+        this.logger.log(`✅ Successfully updated conversation ${conversationId} status to ${status}`);
+      } else {
+        this.logger.error(`❌ Conversation ${conversationId} not found - cannot update status`);
       }
-      
-      this.logger.log(`Updated conversation ${conversationId} status to ${status}`);
     } catch (error) {
       this.logger.error('Error updating conversation status:', error);
       throw error;
@@ -534,10 +555,14 @@ export class WhatsAppConversationService {
           timestamp: new Date(),
         });
 
-        // Update conversation status to active (in case it was escalated)
-        await this.updateConversationStatus(conversationId, 'active');
+        // IMPORTANT: Keep conversation as 'escalated' so AI doesn't respond
+        // Only human agents should respond to escalated conversations
+        // Status should remain 'escalated' until explicitly de-escalated
+        if (conversation.status !== 'escalated') {
+          await this.updateConversationStatus(conversationId, 'escalated');
+        }
 
-        this.logger.log(`Agent message sent for conversation ${conversationId}`);
+        this.logger.log(`Agent message sent for conversation ${conversationId} (status: escalated)`);
       }
 
       return success;
@@ -700,9 +725,9 @@ export class WhatsAppConversationService {
       });
 
       // Build context from training data
-      const context = trainingData.length > 0 
-        ? `KNOWLEDGE BASE (${trainingData.length} sources):\n\n` + 
-          trainingData.map((data, index) => 
+      const context = trainingData.length > 0
+        ? `KNOWLEDGE BASE (${trainingData.length} sources):\n\n` +
+          trainingData.map((data, index) =>
             `=== SOURCE ${index + 1}: ${data.name || 'Training Data'} ===\n${data.instructions ? `Instructions: ${data.instructions}\n\n` : ''}${data.content}`
           ).join('\n\n')
         : '';
@@ -717,5 +742,17 @@ export class WhatsAppConversationService {
       this.logger.error('Error getting training context:', error);
       return '';
     }
+  }
+
+  // Public method to manually set conversation status
+  async setConversationStatus(conversationId: string, status: 'active' | 'escalated' | 'closed'): Promise<void> {
+    this.logger.log(`Manual status change requested for conversation ${conversationId}: ${status}`);
+    await this.updateConversationStatus(conversationId, status);
+  }
+
+  // Public method to de-escalate a conversation (return to AI)
+  async deEscalateConversation(conversationId: string): Promise<void> {
+    this.logger.log(`De-escalating conversation ${conversationId} - returning to AI`);
+    await this.updateConversationStatus(conversationId, 'active');
   }
 }

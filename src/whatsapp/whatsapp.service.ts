@@ -179,6 +179,115 @@ export class WhatsAppService {
     }
   }
 
+  /**
+   * Send a template message via WhatsApp
+   * Used for automation and campaigns
+   */
+  async sendTemplateMessage(
+    tenantId: string,
+    to: string,
+    templateName: string,
+    templateParams?: Record<string, any>,
+  ): Promise<{ messageId?: string; success: boolean }> {
+    try {
+      const phoneNumberId = await this.tenantService.getPhoneNumberId(tenantId);
+      if (!phoneNumberId) {
+        throw new Error(`No WhatsApp phone number ID configured for tenant ${tenantId}`);
+      }
+
+      const url = `${this.baseUrl}/${phoneNumberId}/messages`;
+
+      // If no language code provided, look up the template from database to get correct language
+      let languageCode = templateParams?.languageCode;
+
+      if (!languageCode) {
+        const { PrismaClient } = require('@prisma/client');
+        const prisma = new PrismaClient();
+
+        try {
+          const template = await prisma.whatsAppTemplate.findFirst({
+            where: {
+              tenantId,
+              name: templateName,
+              status: 'APPROVED', // Only use approved templates
+            },
+            orderBy: {
+              createdAt: 'desc', // Get the most recent one
+            },
+          });
+
+          if (template) {
+            languageCode = template.language;
+            this.logger.log(`Found template language from database: ${languageCode}`);
+          }
+        } finally {
+          await prisma.$disconnect();
+        }
+      }
+
+      // Build template components from params
+      const components = [];
+
+      if (templateParams?.header) {
+        components.push({
+          type: 'header',
+          parameters: Array.isArray(templateParams.header)
+            ? templateParams.header.map((value) => ({ type: 'text', text: value }))
+            : [{ type: 'text', text: templateParams.header }],
+        });
+      }
+
+      if (templateParams?.body) {
+        components.push({
+          type: 'body',
+          parameters: Array.isArray(templateParams.body)
+            ? templateParams.body.map((value) => ({ type: 'text', text: value }))
+            : [{ type: 'text', text: templateParams.body }],
+        });
+      }
+
+      if (templateParams?.buttons) {
+        components.push({
+          type: 'button',
+          sub_type: 'quick_reply',
+          index: 0,
+          parameters: templateParams.buttons,
+        });
+      }
+
+      const payload = {
+        messaging_product: 'whatsapp',
+        to,
+        type: 'template',
+        template: {
+          name: templateName,
+          language: {
+            code: languageCode || 'en', // Fallback to 'en' only if template not found
+          },
+          components: components.length > 0 ? components : undefined,
+        },
+      };
+
+      this.logger.log(`📤 Sending template "${templateName}" to ${to}`);
+
+      const headers = await this.getHeaders(tenantId);
+      const response = await axios.post(url, payload, { headers });
+
+      if (response.status === 200 && response.data?.messages?.[0]?.id) {
+        this.logger.log(`✅ Template message sent successfully to ${to}`);
+        return {
+          messageId: response.data.messages[0].id,
+          success: true,
+        };
+      }
+
+      return { success: false };
+    } catch (error) {
+      this.logger.error(`❌ Failed to send template message: ${error.message}`, error.stack);
+      throw error;
+    }
+  }
+
   // Tenant-specific webhook verification
   async verifyWebhookForTenant(
     tenantId: string,
@@ -273,13 +382,37 @@ export class WhatsAppService {
         return true;
       }
 
-      // Decrypt app secret
+      // Decrypt app secret if it's encrypted, otherwise use as-is (plain text)
       const { EncryptionService } = require('../common/services/encryption.service');
       const { ConfigService } = require('@nestjs/config');
       const configService = new ConfigService();
       const encryptionService = new EncryptionService(configService);
 
-      const appSecret = encryptionService.decrypt(credential.appSecret);
+      let appSecret = credential.appSecret?.trim();
+
+      // Check if encrypted and decrypt accordingly
+      if (appSecret && encryptionService.isEncrypted(appSecret)) {
+        // New encryption format (3 parts)
+        try {
+          this.logger.log('Decrypting app secret (new format)');
+          appSecret = encryptionService.decrypt(appSecret);
+        } catch (error) {
+          this.logger.error(`Failed to decrypt app secret: ${error.message}`);
+          return false;
+        }
+      } else if (appSecret && encryptionService.isOldEncryptionFormat(appSecret)) {
+        // Old encryption format (2 parts)
+        try {
+          this.logger.log('Decrypting app secret (old format)');
+          appSecret = encryptionService.decryptOldFormat(appSecret);
+        } catch (error) {
+          this.logger.error(`Failed to decrypt app secret with old format: ${error.message}`);
+          return false;
+        }
+      } else if (appSecret) {
+        // Plain text app secret
+        this.logger.log('Using plain text app secret for webhook validation');
+      }
 
       const crypto = require('crypto');
       const expectedSignature = 'sha256=' + crypto

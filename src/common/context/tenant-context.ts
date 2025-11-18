@@ -18,3 +18,10 @@ export function setTenantContext(context: TenantContext): void {
     Object.assign(store, context);
   }
 }
+
+export async function runWithTenantContext<T>(
+  context: TenantContext,
+  callback: () => Promise<T>,
+): Promise<T> {
+  return tenantContext.run(context, callback);
+}

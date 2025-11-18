@@ -212,4 +212,51 @@ export class EncryptionService {
     const parts = data.split(':');
     return parts.length === 3 && parts.every(part => /^[0-9a-f]+$/i.test(part));
   }
+
+  /**
+   * Check if data uses old encryption format (2 parts: iv:encryptedData)
+   * @param data - Data to check
+   * @returns True if data appears to use old encryption format
+   */
+  isOldEncryptionFormat(data: string): boolean {
+    if (!data) {
+      return false;
+    }
+    const parts = data.split(':');
+    return parts.length === 2 && parts.every(part => /^[0-9a-f]+$/i.test(part));
+  }
+
+  /**
+   * Decrypt data encrypted with old format (aes-256-cbc, 2 parts: iv:encryptedData)
+   * @param encryptedData - The encrypted string (format: iv:encryptedData)
+   * @returns Decrypted plaintext string
+   */
+  decryptOldFormat(encryptedData: string): string {
+    if (!encryptedData) {
+      return '';
+    }
+
+    try {
+      // Parse the encrypted data
+      const parts = encryptedData.split(':');
+      if (parts.length !== 2) {
+        throw new Error('Invalid old encryption format');
+      }
+
+      const iv = Buffer.from(parts[0], 'hex');
+      const encrypted = parts[1];
+
+      // Old format used aes-256-cbc
+      const decipher = crypto.createDecipheriv('aes-256-cbc', this.encryptionKey, iv);
+
+      // Decrypt the data
+      let decrypted = decipher.update(encrypted, 'hex', 'utf8');
+      decrypted += decipher.final('utf8');
+
+      return decrypted;
+    } catch (error) {
+      console.error('Old format decryption error:', error);
+      throw new Error('Failed to decrypt data with old format');
+    }
+  }
 }

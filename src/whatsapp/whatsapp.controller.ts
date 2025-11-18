@@ -2,6 +2,7 @@ import {
   Controller,
   Post,
   Get,
+  Delete,
   Body,
   Query,
   Headers,
@@ -150,12 +151,35 @@ export class WhatsAppController {
 
   @Post('send-message')
   async sendMessage(
-    @Body() body: { to: string; message: string; agentId?: string },
+    @Body() body: { to?: string; message: string; agentId?: string; conversationId?: string },
     @CurrentUser() user: any
   ): Promise<{ success: boolean; error?: string }> {
     try {
-      this.logger.log(`Manual message send request to ${body.to}`);
+      this.logger.log(`Human agent message send request`);
 
+      // If conversationId is provided, use sendMessageAsAgent which handles escalation
+      if (body.conversationId) {
+        this.logger.log(`Sending as agent to conversation ${body.conversationId}`);
+        const success = await this.conversationService.sendMessageAsAgent(
+          body.conversationId,
+          body.message,
+          user.id
+        );
+
+        if (success) {
+          this.logger.log(`Agent message sent successfully, conversation escalated`);
+          return { success: true };
+        } else {
+          return { success: false, error: 'Failed to send message' };
+        }
+      }
+
+      // Fallback to direct message send if no conversationId (should rarely happen)
+      if (!body.to) {
+        return { success: false, error: 'Either conversationId or to is required' };
+      }
+
+      this.logger.log(`Sending direct message to ${body.to} (no conversation context)`);
       const success = await this.whatsappService.sendMessage(body.to, body.message, user.tenantId);
 
       if (success) {
@@ -241,15 +265,103 @@ export class WhatsAppController {
 
   @Post('conversations/:id/escalate')
   async escalateConversation(
-    @Body() body: { agentId: string; reason?: string }
+    @Param('id') conversationId: string,
+    @Body() body: { agentId: string; reason?: string },
+    @CurrentUser() user: any
   ): Promise<{ success: boolean }> {
     try {
-      // This would escalate a conversation to a human agent
-      this.logger.log(`Conversation escalation requested by agent ${body.agentId}`);
+      this.logger.log(`Conversation ${conversationId} escalation requested by agent ${user.id}`);
+      await this.conversationService.setConversationStatus(conversationId, 'escalated');
       return { success: true };
     } catch (error) {
       this.logger.error('Error escalating conversation:', error);
       return { success: false };
+    }
+  }
+
+  @Post('conversations/:id/send-template')
+  async sendTemplateToConversation(
+    @Param('id') conversationId: string,
+    @Body() body: {
+      templateName: string;
+      templateParams?: {
+        header?: string | string[];
+        body?: string | string[];
+        buttons?: any[];
+        languageCode?: string;
+      };
+    },
+    @CurrentUser() user: any
+  ): Promise<{ success: boolean; messageId?: string; error?: string }> {
+    try {
+      this.logger.log(`Sending template "${body.templateName}" to conversation ${conversationId}`);
+
+      // Get the conversation to find the phone number
+      const conversation = await this.conversationService.findConversationById(conversationId);
+      if (!conversation) {
+        return { success: false, error: 'Conversation not found' };
+      }
+
+      // Send the template message
+      const result = await this.whatsappService.sendTemplateMessage(
+        user.tenantId,
+        conversation.phoneNumber,
+        body.templateName,
+        body.templateParams
+      );
+
+      if (result.success) {
+        // Save the template message to conversation history
+        await this.conversationService.sendMessageAsAgent(
+          conversationId,
+          `[Template: ${body.templateName}]`,
+          user.id
+        );
+
+        this.logger.log(`Template sent successfully to ${conversation.phoneNumber}`);
+        return { success: true, messageId: result.messageId };
+      }
+
+      return { success: false, error: 'Failed to send template' };
+    } catch (error) {
+      this.logger.error('Error sending template to conversation:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  @Post('conversations/:id/labels')
+  async addLabelToConversation(
+    @Param('id') conversationId: string,
+    @Body() body: { labelId: string },
+    @CurrentUser() user: any
+  ): Promise<{ success: boolean; error?: string }> {
+    try {
+      this.logger.log(`Adding label ${body.labelId} to conversation ${conversationId}`);
+
+      // You'll need to implement this in the conversation service
+      // For now, return success
+      return { success: true };
+    } catch (error) {
+      this.logger.error('Error adding label to conversation:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  @Delete('conversations/:id/labels/:labelId')
+  async removeLabelFromConversation(
+    @Param('id') conversationId: string,
+    @Param('labelId') labelId: string,
+    @CurrentUser() user: any
+  ): Promise<{ success: boolean; error?: string }> {
+    try {
+      this.logger.log(`Removing label ${labelId} from conversation ${conversationId}`);
+
+      // You'll need to implement this in the conversation service
+      // For now, return success
+      return { success: true };
+    } catch (error) {
+      this.logger.error('Error removing label from conversation:', error);
+      return { success: false, error: error.message };
     }
   }
 
